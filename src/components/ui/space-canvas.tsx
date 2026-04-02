@@ -1,11 +1,10 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 
 import { useAppData } from "@/hooks/use-app-data";
@@ -30,7 +29,11 @@ type SpaceCanvasProps<T> = {
   onViewportChange: (viewport: SpaceViewport) => void;
   onPlacementCommit: (id: string, placement: SpacePlacement) => void;
   onNodeClick?: (node: SpaceCanvasNode<T>) => void;
-  renderNode: (node: SpaceCanvasNode<T>, options: { isDragging: boolean }) => React.ReactNode;
+  getLinkedNodeIds?: (node: SpaceCanvasNode<T>) => string[];
+  renderNode: (
+    node: SpaceCanvasNode<T>,
+    options: { isDragging: boolean; isLinkedDragging: boolean }
+  ) => React.ReactNode;
   className?: string;
   canvasClassName?: string;
   emptyState?: React.ReactNode;
@@ -46,6 +49,10 @@ type DragState = {
   startClientY: number;
   origin: SpacePlacement;
   moved: boolean;
+  linkedOrigins: Array<{
+    id: string;
+    placement: SpacePlacement;
+  }>;
 };
 
 type PanState = {
@@ -137,6 +144,7 @@ export function SpaceCanvas<T>({
   onViewportChange,
   onPlacementCommit,
   onNodeClick,
+  getLinkedNodeIds,
   renderNode,
   className,
   canvasClassName,
@@ -150,6 +158,7 @@ export function SpaceCanvas<T>({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [draftPlacements, setDraftPlacements] = useState<Record<string, SpacePlacement>>({});
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [linkedDraggingIds, setLinkedDraggingIds] = useState<string[]>([]);
   const [resizingId, setResizingId] = useState<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<PanState | null>(null);
@@ -179,43 +188,57 @@ export function SpaceCanvas<T>({
 
   useEffect(() => {
     function onPointerMove(event: PointerEvent) {
-      if (dragRef.current) {
-        const dx = (event.clientX - dragRef.current.startClientX) / viewport.zoom;
-        const dy = (event.clientY - dragRef.current.startClientY) / viewport.zoom;
+      const currentDrag = dragRef.current;
+
+      if (currentDrag) {
+        const dx = (event.clientX - currentDrag.startClientX) / viewport.zoom;
+        const dy = (event.clientY - currentDrag.startClientY) / viewport.zoom;
         const moved = Math.abs(dx) > 6 || Math.abs(dy) > 6;
         const nextPlacement: SpacePlacement = {
-          ...dragRef.current.origin,
-          x: dragRef.current.origin.x + dx,
-          y: dragRef.current.origin.y + dy,
+          ...currentDrag.origin,
+          x: currentDrag.origin.x + dx,
+          y: currentDrag.origin.y + dy,
         };
 
         dragRef.current = {
-          ...dragRef.current,
+          ...currentDrag,
           moved,
         };
 
         setDraftPlacements((current) => ({
           ...current,
-          [dragRef.current!.id]: nextPlacement,
+          [currentDrag.id]: nextPlacement,
+          ...Object.fromEntries(
+            currentDrag.linkedOrigins.map((linked) => [
+              linked.id,
+              {
+                ...linked.placement,
+                x: linked.placement.x + dx,
+                y: linked.placement.y + dy,
+              },
+            ])
+          ),
         }));
         return;
       }
 
-      if (resizeRef.current) {
-        const dx = (event.clientX - resizeRef.current.startClientX) / viewport.zoom;
-        const dy = (event.clientY - resizeRef.current.startClientY) / viewport.zoom;
+      const currentResize = resizeRef.current;
+
+      if (currentResize) {
+        const dx = (event.clientX - currentResize.startClientX) / viewport.zoom;
+        const dy = (event.clientY - currentResize.startClientY) / viewport.zoom;
         const nextPlacement = getResizedPlacement(
-          resizeRef.current.origin,
-          resizeRef.current.direction,
+          currentResize.origin,
+          currentResize.direction,
           dx,
           dy,
-          resizeRef.current.minWidth,
-          resizeRef.current.minHeight
+          currentResize.minWidth,
+          currentResize.minHeight
         );
 
         setDraftPlacements((current) => ({
           ...current,
-          [resizeRef.current!.id]: nextPlacement,
+          [currentResize.id]: nextPlacement,
         }));
         return;
       }
@@ -242,6 +265,12 @@ export function SpaceCanvas<T>({
         if (currentDrag.moved || changed) {
           onPlacementCommit(currentDrag.id, placement);
           suppressClickUntilRef.current = performance.now() + 180;
+        } else if (onNodeClick) {
+          const node = resolvedNodes.find((entry) => entry.id === currentDrag.id);
+
+          if (node) {
+            onNodeClick(node);
+          }
         }
       }
 
@@ -264,68 +293,107 @@ export function SpaceCanvas<T>({
       panRef.current = null;
       resizeRef.current = null;
       setDraggingId(null);
+      setLinkedDraggingIds([]);
       setResizingId(null);
     }
 
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", finishPointer);
+    window.addEventListener("pointercancel", finishPointer);
 
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", finishPointer);
+      window.removeEventListener("pointercancel", finishPointer);
     };
   }, [
     draftPlacements,
+    onNodeClick,
     onPlacementCommit,
     onViewportChange,
+    resolvedNodes,
     viewport.zoom,
   ]);
 
-  function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    event.preventDefault();
-    event.stopPropagation();
+  const handleWheel = useCallback(
+    (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
 
-    const rect = containerRef.current?.getBoundingClientRect();
+      const rect = containerRef.current?.getBoundingClientRect();
 
-    if (!rect) {
-      return;
-    }
+      if (!rect) {
+        return;
+      }
 
-    if (event.altKey) {
-      const pointerX = event.clientX - rect.left;
-      const pointerY = event.clientY - rect.top;
-      const boardX = (pointerX - viewport.x) / viewport.zoom;
-      const boardY = (pointerY - viewport.y) / viewport.zoom;
-      const zoomDelta = event.deltaY > 0 ? 0.92 : 1.08;
-      const nextZoom = clamp(viewport.zoom * zoomDelta, 0.55, 1.9);
+      if (event.altKey) {
+        const pointerX = event.clientX - rect.left;
+        const pointerY = event.clientY - rect.top;
+        const boardX = (pointerX - viewport.x) / viewport.zoom;
+        const boardY = (pointerY - viewport.y) / viewport.zoom;
+        const normalizedDelta = clamp(event.deltaY, -120, 120);
+        const zoomFactor = Math.exp(-normalizedDelta * 0.0022);
+        const nextZoom = clamp(viewport.zoom * zoomFactor, 0.1, 2.4);
 
-      onViewportChange({
-        x: pointerX - boardX * nextZoom,
-        y: pointerY - boardY * nextZoom,
-        zoom: nextZoom,
-      });
-      return;
-    }
+        onViewportChange({
+          x: pointerX - boardX * nextZoom,
+          y: pointerY - boardY * nextZoom,
+          zoom: nextZoom,
+        });
+        return;
+      }
 
-    if (event.shiftKey) {
+      if (event.shiftKey) {
+        onViewportChange({
+          ...viewport,
+          x: viewport.x - event.deltaY * 0.8 - event.deltaX * 0.4,
+        });
+        return;
+      }
+
       onViewportChange({
         ...viewport,
-        x: viewport.x - event.deltaY * 0.8 - event.deltaX * 0.4,
+        x: viewport.x - event.deltaX * 0.7,
+        y: viewport.y - event.deltaY * 0.8,
       });
+    },
+    [onViewportChange, viewport]
+  );
+
+  useEffect(() => {
+    const element = containerRef.current;
+
+    if (!element) {
       return;
     }
 
-    onViewportChange({
-      ...viewport,
-      x: viewport.x - event.deltaX * 0.7,
-      y: viewport.y - event.deltaY * 0.8,
-    });
-  }
+    element.addEventListener("wheel", handleWheel, { passive: false });
+
+    return () => {
+      element.removeEventListener("wheel", handleWheel);
+    };
+  }, [handleWheel]);
 
   function startNodeDrag(
     event: ReactPointerEvent<HTMLDivElement>,
     node: SpaceCanvasNode<T>
   ) {
+    if (event.button === 2) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      panRef.current = {
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        origin: viewport,
+      };
+      return;
+    }
+
+    if (event.button !== 0) {
+      return;
+    }
+
     if (isInteractiveTarget(event.target)) {
       return;
     }
@@ -339,8 +407,30 @@ export function SpaceCanvas<T>({
       startClientY: event.clientY,
       origin: draftPlacements[node.id] ?? node.placement,
       moved: false,
+      linkedOrigins: (getLinkedNodeIds?.(node) ?? [])
+        .map((linkedId) => {
+          const linkedNode = resolvedNodes.find((entry) => entry.id === linkedId);
+
+          if (!linkedNode) {
+            return null;
+          }
+
+          return {
+            id: linkedId,
+            placement: draftPlacements[linkedId] ?? linkedNode.placement,
+          };
+        })
+        .filter(
+          (
+            entry
+          ): entry is {
+            id: string;
+            placement: SpacePlacement;
+          } => !!entry
+        ),
     };
     setDraggingId(node.id);
+    setLinkedDraggingIds(dragRef.current.linkedOrigins.map((entry) => entry.id));
   }
 
   function startResize(
@@ -366,6 +456,21 @@ export function SpaceCanvas<T>({
   }
 
   function startCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button === 2) {
+      event.preventDefault();
+
+      panRef.current = {
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        origin: viewport,
+      };
+      return;
+    }
+
+    if (event.button !== 0) {
+      return;
+    }
+
     if (event.target !== event.currentTarget) {
       return;
     }
@@ -377,25 +482,6 @@ export function SpaceCanvas<T>({
       startClientY: event.clientY,
       origin: viewport,
     };
-  }
-
-  function handleNodeClick(
-    event: ReactMouseEvent<HTMLDivElement>,
-    node: SpaceCanvasNode<T>
-  ) {
-    if (!onNodeClick) {
-      return;
-    }
-
-    if (isInteractiveTarget(event.target)) {
-      return;
-    }
-
-    if (performance.now() < suppressClickUntilRef.current) {
-      return;
-    }
-
-    onNodeClick(node);
   }
 
   const resizeHandles: Array<{
@@ -435,8 +521,8 @@ export function SpaceCanvas<T>({
       />
       <div
         className="absolute inset-0 z-10 touch-none"
+        onContextMenu={(event) => event.preventDefault()}
         onPointerDown={startCanvasPan}
-        onWheel={handleWheel}
         ref={containerRef}
       >
         <div
@@ -445,12 +531,13 @@ export function SpaceCanvas<T>({
             width: size.width,
             height: size.height,
             transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+            willChange: "transform",
           }}
         >
           {resolvedNodes.map((node) => (
             <div
               className="absolute"
-              onClick={(event) => handleNodeClick(event, node)}
+              onContextMenu={(event) => event.preventDefault()}
               onDragStart={(event) => event.preventDefault()}
               key={node.id}
               onPointerDown={(event) => startNodeDrag(event, node)}
@@ -462,12 +549,17 @@ export function SpaceCanvas<T>({
                 zIndex:
                   resizingId === node.id
                     ? 40
+                    : linkedDraggingIds.includes(node.id)
+                      ? 35
                     : draggingId === node.id
                       ? 30
                       : node.zIndex ?? 10,
               }}
             >
-              {renderNode(node, { isDragging: draggingId === node.id })}
+              {renderNode(node, {
+                isDragging: draggingId === node.id,
+                isLinkedDragging: linkedDraggingIds.includes(node.id),
+              })}
               {node.resizable
                 ? resizeHandles.map((handle) => (
                     <div

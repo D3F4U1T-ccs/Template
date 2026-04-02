@@ -11,6 +11,7 @@ type ObjectTileCardProps = {
   menu?: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
+  cornerRadius?: number;
 };
 
 export function ObjectTileCard({
@@ -21,13 +22,15 @@ export function ObjectTileCard({
   menu,
   footer,
   className,
+  cornerRadius = 26,
 }: ObjectTileCardProps) {
   return (
     <div
       className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden rounded-[26px] border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-4 shadow-[var(--shadow-soft)] transition-transform duration-150",
+        "flex h-full min-h-0 flex-col overflow-hidden border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-4 shadow-[var(--shadow-soft)] transition-transform duration-150",
         className
       )}
+      style={{ borderRadius: cornerRadius }}
     >
       <div className="mb-4 flex items-start justify-between gap-3">
         <p className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</p>

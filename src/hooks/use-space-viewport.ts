@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAppData } from "@/hooks/use-app-data";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import type { SpaceViewport, WorkspaceSpaceKey } from "@/types/models";
 
 const defaultViewport: SpaceViewport = {
@@ -10,48 +9,67 @@ const defaultViewport: SpaceViewport = {
   zoom: 1,
 };
 
+const SAVE_DELAY_MS = 520;
+
+function isSameViewport(left: SpaceViewport, right: SpaceViewport) {
+  return left.x === right.x && left.y === right.y && left.zoom === right.zoom;
+}
+
 export function useSpaceViewport(space: WorkspaceSpaceKey) {
   const { settings, saveWorkspaceSettings } = useAppData();
   const externalViewport = useMemo(
     () => settings.spaceViewports?.[space] ?? defaultViewport,
     [settings.spaceViewports, space]
   );
-  const [viewport, setViewport] = useState<SpaceViewport>(externalViewport);
+  const [viewport, setViewportState] = useState<SpaceViewport>(externalViewport);
+  const pendingViewportRef = useRef<SpaceViewport | null>(null);
+
+  const setViewport = useCallback((next: SpaceViewport) => {
+    pendingViewportRef.current = next;
+    setViewportState((current) => (isSameViewport(current, next) ? current : next));
+  }, []);
 
   useEffect(() => {
-    setViewport((current) =>
-      current.x === externalViewport.x &&
-      current.y === externalViewport.y &&
-      current.zoom === externalViewport.zoom
-        ? current
-        : externalViewport
+    const pendingViewport = pendingViewportRef.current;
+
+    if (pendingViewport) {
+      if (isSameViewport(externalViewport, pendingViewport)) {
+        pendingViewportRef.current = null;
+      } else {
+        return;
+      }
+    }
+
+    setViewportState((current) =>
+      isSameViewport(current, externalViewport) ? current : externalViewport
     );
   }, [externalViewport]);
 
-  const debouncedViewport = useDebouncedValue(viewport, 260);
-
   useEffect(() => {
-    const changed =
-      debouncedViewport.x !== externalViewport.x ||
-      debouncedViewport.y !== externalViewport.y ||
-      debouncedViewport.zoom !== externalViewport.zoom;
-
-    if (!changed) {
+    if (!pendingViewportRef.current || isSameViewport(viewport, externalViewport)) {
       return;
     }
 
-    void saveWorkspaceSettings({
-      spaceViewports: {
-        ...(settings.spaceViewports ?? {}),
-        [space]: debouncedViewport,
-      },
-    });
+    const timeoutId = window.setTimeout(() => {
+      const pendingViewport = pendingViewportRef.current ?? viewport;
+
+      void saveWorkspaceSettings({
+        spaceViewports: {
+          ...(settings.spaceViewports ?? {}),
+          [space]: pendingViewport,
+        },
+      });
+    }, SAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
   }, [
-    debouncedViewport,
     externalViewport,
     saveWorkspaceSettings,
     settings.spaceViewports,
     space,
+    viewport,
   ]);
 
   return {

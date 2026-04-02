@@ -28,7 +28,14 @@ export function Topbar({ onSearchOpen }: { onSearchOpen: () => void }) {
           <div className="flex items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-1 py-1">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const label = item.key === "dashboard" ? t("dashboard") : t(item.key);
+              const label =
+                item.key === "dashboard"
+                  ? t("dashboard")
+                  : item.key === "favorites"
+                    ? t("favoritesPage")
+                    : item.key === "archive"
+                      ? t("archivePage")
+                      : t(item.key);
 
               return (
                 <NavLink

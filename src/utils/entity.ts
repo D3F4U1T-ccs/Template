@@ -26,6 +26,7 @@ export function createBaseEntity(order = 1): BaseEntity {
     description: "",
     createdAt: nowIso(),
     updatedAt: nowIso(),
+    cornerRadius: 28,
     pinned: false,
     favorite: false,
     archivedAt: null,
@@ -51,6 +52,7 @@ export function upsertEntity<T extends BaseEntity>(
     id: current?.id ?? patch.id ?? base.id,
     createdAt: current?.createdAt ?? patch.createdAt ?? base.createdAt,
     updatedAt: nowIso(),
+    cornerRadius: patch.cornerRadius ?? current?.cornerRadius ?? base.cornerRadius,
     order: current?.order ?? patch.order ?? order,
     tags: patch.tags ?? current?.tags ?? [],
     spacePlacements:

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
+import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
 import { EmptyState, Field, Input, Select, Textarea, Badge } from "@/components/ui/primitives";
@@ -57,6 +58,7 @@ const emptyNoteForm = {
   content: "",
   tags: "",
   groupId: "",
+  cornerRadius: 26,
   pinned: false,
   favorite: false,
 };
@@ -66,6 +68,7 @@ const emptyGroupForm = {
   title: "",
   description: "",
   accent: accentOptions[0],
+  cornerRadius: 28,
   collapsed: false,
   pinned: false,
   favorite: false,
@@ -80,6 +83,7 @@ export default function NotesPage() {
   const { t } = useI18n();
   const viewedNoteIdRef = useRef<string | null>(null);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
   const [form, setForm] = useState(emptyNoteForm);
@@ -91,6 +95,17 @@ export default function NotesPage() {
   const notes = useMemo(
     () => filterActive(collections.notes).filter((item) => !item.archivedAt),
     [collections.notes]
+  );
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId]
+  );
+  const selectedGroupNotes = useMemo(
+    () =>
+      selectedGroup
+        ? notes.filter((note) => note.groupId === selectedGroup.id)
+        : [],
+    [notes, selectedGroup]
   );
 
   const selectedNote = useMemo(
@@ -230,6 +245,7 @@ export default function NotesPage() {
       content: selectedNote.content,
       tags: selectedNote.tags.join(", "),
       groupId: selectedNote.groupId ?? "",
+      cornerRadius: selectedNote.cornerRadius,
       pinned: selectedNote.pinned,
       favorite: selectedNote.favorite,
     });
@@ -263,11 +279,13 @@ export default function NotesPage() {
   }
 
   function openEditGroup(group: NoteGroup) {
+    setSelectedGroupId(null);
     setGroupForm({
       id: group.id,
       title: group.title,
       description: group.description,
       accent: group.accent,
+      cornerRadius: group.cornerRadius,
       collapsed: group.collapsed,
       pinned: group.pinned,
       favorite: group.favorite,
@@ -289,6 +307,7 @@ export default function NotesPage() {
         description: form.description,
         content: form.content,
         groupId: form.groupId || null,
+        cornerRadius: form.cornerRadius,
         tags: form.tags
           .split(",")
           .map((item) => item.trim())
@@ -317,6 +336,7 @@ export default function NotesPage() {
         title: groupForm.title.trim() || t("untitledGroup"),
         description: groupForm.description,
         accent: groupForm.accent,
+        cornerRadius: groupForm.cornerRadius,
         collapsed: groupForm.collapsed,
         pinned: groupForm.pinned,
         favorite: groupForm.favorite,
@@ -346,16 +366,9 @@ export default function NotesPage() {
       return;
     }
 
-    await saveItem("noteGroups", setSpacePlacement(group, NOTES_SPACE, placement));
-
     const deltaX = placement.x - previousPlacement.x;
     const deltaY = placement.y - previousPlacement.y;
-
-    if (!deltaX && !deltaY) {
-      return;
-    }
-
-    const movedNotes = notes
+    const movedNotes = collections.notes
       .filter((note) => note.groupId === group.id)
       .map((note) => {
         const notePlacement = getSpacePlacement(
@@ -375,13 +388,16 @@ export default function NotesPage() {
           y: notePlacement.y + deltaY,
         });
       });
+    const queue: Array<Promise<void>> = [
+      saveItem("noteGroups", setSpacePlacement(group, NOTES_SPACE, placement)),
+    ];
 
-    if (!movedNotes.length) {
-      return;
+    if (deltaX || deltaY) {
+      const untouchedNotes = collections.notes.filter((note) => note.groupId !== group.id);
+      queue.push(saveMany("notes", [...untouchedNotes, ...movedNotes]));
     }
 
-    const untouchedNotes = collections.notes.filter((note) => note.groupId !== group.id);
-    await saveMany("notes", [...untouchedNotes, ...movedNotes]);
+    await Promise.all(queue);
   }
 
   async function handleNotePlacementCommit(
@@ -452,9 +468,25 @@ export default function NotesPage() {
         }
         nodes={nodes}
         onNodeClick={(node) => {
+          if (node.data.kind === "group") {
+            setSelectedGroupId(node.data.group.id);
+            return;
+          }
+
           if (node.data.kind === "note") {
             navigate(`/notes/${node.data.note.id}`);
           }
+        }}
+        getLinkedNodeIds={(node) => {
+          if (node.data.kind !== "group") {
+            return [];
+          }
+
+          const groupNode = node.data as Extract<NoteBoardData, { kind: "group" }>;
+
+          return notes
+            .filter((note) => note.groupId === groupNode.group.id)
+            .map((note) => `note-${note.id}`);
         }}
         onPlacementCommit={(id, placement) => {
           const node = nodes.find((item) => item.id === id);
@@ -471,14 +503,16 @@ export default function NotesPage() {
           void handleNotePlacementCommit(node.data.note, placement);
         }}
         onViewportChange={setViewport}
-        renderNode={(node) => {
+        renderNode={(node, options) => {
           if (node.data.kind === "group") {
             const groupNode = node.data;
 
             return (
               <NoteFrameCard
                 group={groupNode.group}
+                isDragging={options.isDragging}
                 noteCount={groupNode.noteCount}
+                placementWidth={node.placement.width}
                 onEdit={() => openEditGroup(groupNode.group)}
                 onSave={(item) => void saveItem("noteGroups", item)}
               />
@@ -533,6 +567,22 @@ export default function NotesPage() {
               onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
               placeholder={t("placeholderItemTitle")}
               value={form.title}
+            />
+          </Field>
+          <Field hint={`${form.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={40}
+              min={10}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={form.cornerRadius}
             />
           </Field>
           <Field label={t("fieldDescription")}>
@@ -599,6 +649,22 @@ export default function NotesPage() {
               ))}
             </Select>
           </Field>
+          <Field hint={`${groupForm.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={48}
+              min={10}
+              onChange={(event) =>
+                setGroupForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={groupForm.cornerRadius}
+            />
+          </Field>
           <div className="md:col-span-2">
             <Field label={t("fieldDescription")}>
               <Textarea
@@ -611,6 +677,60 @@ export default function NotesPage() {
             </Field>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        footer={
+          <div className="flex justify-between gap-3">
+            <Button
+              onClick={() => {
+                if (selectedGroup) {
+                  openEditGroup(selectedGroup);
+                }
+              }}
+              variant="secondary"
+            >
+              {t("edit")}
+            </Button>
+            <Button onClick={() => setSelectedGroupId(null)}>{t("cancel")}</Button>
+          </div>
+        }
+        onClose={() => setSelectedGroupId(null)}
+        open={!!selectedGroup}
+        size="lg"
+        title={selectedGroup?.title || t("createGroup")}
+      >
+        {selectedGroup ? (
+          <div className="space-y-4">
+            {selectedGroup.description ? (
+              <p className="text-sm leading-6 text-[var(--app-muted)]">
+                {selectedGroup.description}
+              </p>
+            ) : null}
+            {selectedGroupNotes.length ? (
+              <div className="space-y-3">
+                {selectedGroupNotes.map((note) => (
+                  <button
+                    className="flex w-full items-start justify-between rounded-[22px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4 text-left transition hover:bg-[var(--card-hover)]"
+                    key={note.id}
+                    onClick={() => navigate(`/notes/${note.id}`)}
+                    type="button"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-[var(--app-text)]">{note.title}</p>
+                      <p className="mt-1 line-clamp-2 text-sm text-[var(--app-muted)]">
+                        {note.description || formatDateTime(note.updatedAt)}
+                      </p>
+                    </div>
+                    <Badge>{t("open")}</Badge>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <EmptyState description={t("noGroup")} title="" />
+            )}
+          </div>
+        ) : null}
       </Modal>
     </div>
   );
@@ -634,6 +754,7 @@ function NoteTileCard({
     <ObjectTileCard
       avatarLabel={note.title.slice(0, 1).toUpperCase() || "N"}
       className="cursor-grab active:cursor-grabbing"
+      cornerRadius={note.cornerRadius}
       menu={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -671,25 +792,27 @@ function NoteTileCard({
 function NoteFrameCard({
   group,
   noteCount,
+  placementWidth,
+  isDragging,
   onEdit,
   onSave,
 }: {
   group: NoteGroup;
   noteCount: number;
+  placementWidth: number;
+  isDragging: boolean;
   onEdit: () => void;
   onSave: (item: NoteGroup) => void;
 }) {
   const { t } = useI18n();
 
   return (
-    <FrameSurface accent={group.accent}>
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-xl font-semibold text-white">{group.title}</p>
-          {group.description ? (
-            <p className="mt-1 truncate text-sm text-white/50">{group.description}</p>
-          ) : null}
-        </div>
+    <CanvasFrame
+      accent={group.accent}
+      cornerRadius={group.cornerRadius}
+      count={noteCount}
+      isDragging={isDragging}
+      menu={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -718,31 +841,10 @@ function NoteFrameCard({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-
-      <div className="relative mt-5 flex-1 rounded-[24px] border border-white/10 bg-black/72" />
-
-      <div className="relative mt-4 flex items-center justify-between gap-3">
-        <span className="text-sm text-white/52">{t("listFrameHint")}</span>
-        <Badge className="border-white/10 bg-white/5 text-white/70">{noteCount}</Badge>
-      </div>
-    </FrameSurface>
-  );
-}
-
-function FrameSurface({
-  accent,
-  children,
-}: {
-  accent: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="group relative flex h-full min-h-0 cursor-grab flex-col overflow-hidden rounded-[28px] border border-white/10 bg-black/85 p-4 shadow-[0_24px_80px_-48px_rgba(0,0,0,0.95)] active:cursor-grabbing">
-      <div
-        className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent} opacity-25 transition-opacity duration-200 group-hover:opacity-35`}
-      />
-      {children}
-    </div>
+      }
+      placementWidth={placementWidth}
+      subtitle={group.description || t("notes")}
+      title={group.title}
+    />
   );
 }

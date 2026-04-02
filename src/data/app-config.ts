@@ -1,9 +1,11 @@
 import {
+  Archive,
   FolderKanban,
   LayoutDashboard,
   Link2,
   ListTodo,
   NotepadText,
+  Star,
 } from "lucide-react";
 
 import type {
@@ -35,6 +37,8 @@ export const navItems = [
   { key: "tasks", label: "Tasks", href: "/tasks", icon: ListTodo },
   { key: "lists", label: "Lists", href: "/lists", icon: FolderKanban },
   { key: "notes", label: "Notes", href: "/notes", icon: NotepadText },
+  { key: "favorites", label: "Favorites", href: "/favorites", icon: Star },
+  { key: "archive", label: "Archive", href: "/archive", icon: Archive },
 ] as const satisfies Array<{
   key: AppPageKey;
   label: string;
@@ -96,6 +100,8 @@ export const defaultSettings: AppSettings = {
     "tasks-board": { x: 0, y: 0, zoom: 1 },
     "lists-board": { x: 0, y: 0, zoom: 1 },
     "notes-board": { x: 0, y: 0, zoom: 1 },
+    "favorites-board": { x: 0, y: 0, zoom: 1 },
+    "archive-board": { x: 0, y: 0, zoom: 1 },
   },
 };
 

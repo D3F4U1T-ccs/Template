@@ -55,8 +55,18 @@ const SPACE_KEYS: WorkspaceSpaceKey[] = [
   "tasks-board",
   "lists-board",
   "notes-board",
+  "favorites-board",
+  "archive-board",
 ];
-const PAGE_KEYS: AppPageKey[] = ["dashboard", "links", "tasks", "lists", "notes"];
+const PAGE_KEYS: AppPageKey[] = [
+  "dashboard",
+  "links",
+  "tasks",
+  "lists",
+  "notes",
+  "favorites",
+  "archive",
+];
 const THEME_MODES: ThemeMode[] = ["system", "dark", "light"];
 const LANGUAGE_CODES: LanguageCode[] = ["ru", "en"];
 const CANVAS_PATTERNS: CanvasPattern[] = ["dots", "grid"];
@@ -239,6 +249,7 @@ function normalizeBaseEntity(id: string, value: unknown): BaseEntity {
     description: readString(record, "description"),
     createdAt,
     updatedAt,
+    cornerRadius: Math.min(Math.max(readNumber(record, "cornerRadius", 28), 8), 48),
     pinned: readBoolean(record, "pinned"),
     favorite: readBoolean(record, "favorite"),
     archivedAt: readNullableString(record, "archivedAt"),

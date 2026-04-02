@@ -8,6 +8,8 @@ export type AppPageKey =
   | "tasks"
   | "lists"
   | "notes"
+  | "favorites"
+  | "archive"
   | "files"
   | "portfolio"
   | "settings";
@@ -18,7 +20,9 @@ export type WorkspaceSpaceKey =
   | "links-board"
   | "tasks-board"
   | "lists-board"
-  | "notes-board";
+  | "notes-board"
+  | "favorites-board"
+  | "archive-board";
 
 export interface SpacePlacement {
   x: number;
@@ -42,6 +46,7 @@ export interface BaseEntity {
   description: string;
   createdAt: string;
   updatedAt: string;
+  cornerRadius: number;
   pinned: boolean;
   favorite: boolean;
   archivedAt: string | null;

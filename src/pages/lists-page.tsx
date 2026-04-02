@@ -4,6 +4,7 @@ import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions, defaultListFeatures, listFeatureOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
+import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
@@ -58,6 +59,7 @@ const emptyListForm = {
   coverUrl: "",
   listType: "",
   accent: accentOptions[0],
+  cornerRadius: 28,
   features: { ...defaultListFeatures } as ListFeatureConfig,
 };
 
@@ -68,6 +70,7 @@ const emptyItemForm = {
   description: "",
   imageUrl: "",
   rating: "",
+  cornerRadius: 22,
   watched: false,
   progress: "",
   season: "",
@@ -313,6 +316,7 @@ export default function ListsPage() {
       coverUrl: list.coverUrl,
       listType: list.listType,
       accent: list.accent,
+      cornerRadius: list.cornerRadius,
       features: { ...list.features },
     });
     setListModalOpen(true);
@@ -334,6 +338,7 @@ export default function ListsPage() {
       description: item.description,
       imageUrl: item.imageUrl,
       rating: item.rating?.toString() ?? "",
+      cornerRadius: item.cornerRadius,
       watched: item.watched,
       progress: item.progress?.toString() ?? "",
       season: item.season?.toString() ?? "",
@@ -358,6 +363,7 @@ export default function ListsPage() {
         coverUrl: listForm.coverUrl,
         listType: listForm.listType || "Custom",
         accent: listForm.accent,
+        cornerRadius: listForm.cornerRadius,
         features: listForm.features,
       },
       current?.order ?? nextOrder(collections.lists)
@@ -383,6 +389,7 @@ export default function ListsPage() {
         listId: itemForm.listId || null,
         imageUrl: itemForm.imageUrl,
         rating: itemForm.rating ? Number(itemForm.rating) : null,
+        cornerRadius: itemForm.cornerRadius,
         watched: itemForm.watched,
         progress: itemForm.progress ? Number(itemForm.progress) : null,
         season: itemForm.season ? Number(itemForm.season) : null,
@@ -428,12 +435,6 @@ export default function ListsPage() {
     const deltaX = placement.x - previousPlacement.x;
     const deltaY = placement.y - previousPlacement.y;
 
-    await saveItem("lists", nextList);
-
-    if (!deltaX && !deltaY) {
-      return;
-    }
-
     const movedItems = collections.listItems.map((item) => {
       if (item.listId !== list.id) {
         return item;
@@ -456,8 +457,13 @@ export default function ListsPage() {
         y: itemPlacement.y + deltaY,
       });
     });
+    const queue: Array<Promise<void>> = [saveItem("lists", nextList)];
 
-    await saveMany("listItems", movedItems);
+    if (deltaX || deltaY) {
+      queue.push(saveMany("listItems", movedItems));
+    }
+
+    await Promise.all(queue);
   }
 
   async function handleItemPlacementCommit(
@@ -523,9 +529,25 @@ export default function ListsPage() {
         }
         nodes={nodes}
         onNodeClick={(node) => {
+          if (node.data.kind === "frame") {
+            navigate(`/lists/${node.data.list.id}`);
+            return;
+          }
+
           if (node.data.kind === "item") {
             openEditItem(node.data.item);
           }
+        }}
+        getLinkedNodeIds={(node) => {
+          if (node.data.kind !== "frame") {
+            return [];
+          }
+
+          const frameNode = node.data as Extract<ListBoardNodeData, { kind: "frame" }>;
+
+          return activeItems
+            .filter((item) => item.listId === frameNode.list.id)
+            .map((item) => `item-${item.id}`);
         }}
         onPlacementCommit={(id, placement) => {
           const node = nodes.find((entry) => entry.id === id);
@@ -542,14 +564,16 @@ export default function ListsPage() {
           void handleItemPlacementCommit(node.data.item, placement);
         }}
         onViewportChange={setViewport}
-        renderNode={(node) => {
+        renderNode={(node, options) => {
           if (node.data.kind === "frame") {
             const frame = node.data.list;
 
             return (
               <ListFrameCard
                 itemCount={activeItems.filter((item) => item.listId === frame.id).length}
+                isDragging={options.isDragging}
                 list={frame}
+                placementWidth={node.placement.width}
                 onEdit={() => openEditList(frame)}
                 onOpen={() => navigate(`/lists/${frame.id}`)}
                 onSave={(item) => void saveItem("lists", item)}
@@ -561,6 +585,7 @@ export default function ListsPage() {
 
           return (
             <ListItemBoardCard
+              isLinkedDragging={options.isLinkedDragging}
               item={itemNode.item}
               list={itemNode.list}
               onEdit={() => openEditItem(itemNode.item)}
@@ -631,6 +656,22 @@ export default function ListsPage() {
               ))}
             </Select>
           </Field>
+          <Field hint={`${listForm.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={48}
+              min={10}
+              onChange={(event) =>
+                setListForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={listForm.cornerRadius}
+            />
+          </Field>
           <div className="md:col-span-2 grid gap-3 md:grid-cols-2">
             {listFeatureOptions.map((feature) => (
               <label
@@ -696,6 +737,22 @@ export default function ListsPage() {
               onChange={(event) => setItemForm((current) => ({ ...current, title: event.target.value }))}
               placeholder={t("placeholderItemTitle")}
               value={itemForm.title}
+            />
+          </Field>
+          <Field hint={`${itemForm.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={40}
+              min={10}
+              onChange={(event) =>
+                setItemForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={itemForm.cornerRadius}
             />
           </Field>
           {currentItemList?.features.image ? (
@@ -962,12 +1019,16 @@ export default function ListsPage() {
 function ListFrameCard({
   list,
   itemCount,
+  placementWidth,
+  isDragging,
   onOpen,
   onEdit,
   onSave,
 }: {
   list: SmartList;
   itemCount: number;
+  placementWidth: number;
+  isDragging: boolean;
   onOpen: () => void;
   onEdit: () => void;
   onSave: (item: SmartList) => void;
@@ -975,20 +1036,12 @@ function ListFrameCard({
   const { t } = useI18n();
 
   return (
-    <div className="group relative flex h-full min-h-0 cursor-grab flex-col overflow-hidden rounded-[28px] border border-white/10 bg-black/85 p-4 shadow-[0_24px_80px_-48px_rgba(0,0,0,0.95)] active:cursor-grabbing">
-      <div
-        className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${list.accent} opacity-25 transition-opacity duration-200 group-hover:opacity-35`}
-      />
-      <div className="relative flex items-start justify-between gap-3">
-        <button
-          className="min-w-0 text-left"
-          data-space-no-drag="true"
-          onClick={onOpen}
-          type="button"
-        >
-          <p className="truncate text-xl font-semibold text-white">{list.title}</p>
-          <p className="mt-1 truncate text-sm text-white/55">{list.listType || t("lists")}</p>
-        </button>
+    <CanvasFrame
+      accent={list.accent}
+      cornerRadius={list.cornerRadius}
+      count={itemCount}
+      isDragging={isDragging}
+      menu={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -1013,36 +1066,42 @@ function ListFrameCard({
             <DropdownMenuItem onClick={() => onSave(toggleArchive(list))}>
               {list.archivedAt ? t("restore") : t("archive")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(list))}>{t("delete")}</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSave(markDeleted(list))}>
+              {t("delete")}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-
-      <div className="relative mt-5 flex-1 rounded-[24px] border border-white/10 bg-black/70" />
-
-      <div className="relative mt-4 flex items-center justify-between gap-3">
-        <span className="text-sm text-white/52">{t("listFrameHint")}</span>
-        <Badge className="border-white/10 bg-white/5 text-white/70">{itemCount}</Badge>
-      </div>
-    </div>
+      }
+      placementWidth={placementWidth}
+      subtitle={list.listType || t("lists")}
+      title={list.title}
+    />
   );
 }
 
 function ListItemBoardCard({
   item,
   list,
+  isLinkedDragging,
   onEdit,
   onSave,
 }: {
   item: SmartListItem;
   list: SmartList | null;
+  isLinkedDragging: boolean;
   onEdit: () => void;
   onSave: (item: SmartListItem) => void;
 }) {
   const { t } = useI18n();
 
   return (
-    <div className="flex h-full min-h-0 cursor-grab flex-col overflow-hidden rounded-[22px] border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-3 shadow-[var(--shadow-soft)] active:cursor-grabbing">
+    <div
+      className="flex h-full min-h-0 cursor-grab flex-col overflow-hidden border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-3 shadow-[var(--shadow-soft)] active:cursor-grabbing"
+      style={{
+        borderRadius: item.cornerRadius,
+        filter: isLinkedDragging ? "drop-shadow(0 12px 24px rgba(0,0,0,0.18))" : undefined,
+      }}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-[var(--app-text)]">{item.title}</p>

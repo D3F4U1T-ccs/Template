@@ -29,6 +29,7 @@ type DashboardPinnedItem = {
     | "linkGroups"
     | "taskGroups"
     | "tasks"
+    | "listItems"
     | "notes"
     | "noteGroups"
     | "lists";
@@ -37,6 +38,7 @@ type DashboardPinnedItem = {
     | CollectionMap["linkGroups"]
     | CollectionMap["taskGroups"]
     | CollectionMap["tasks"]
+    | CollectionMap["listItems"]
     | CollectionMap["notes"]
     | CollectionMap["noteGroups"]
     | CollectionMap["lists"];
@@ -110,6 +112,18 @@ export default function DashboardPage() {
           entity: item,
           avatarUrl: item.coverUrl || undefined,
           avatarLabel: "S",
+        })),
+      ...collections.listItems
+        .filter((item) => item.pinned && !item.deletedAt && !item.archivedAt)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          subtitle: item.description || item.itemNotes || t("lists"),
+          route: item.listId ? `/lists/${item.listId}` : "/lists",
+          collectionName: "listItems" as const,
+          entity: item,
+          avatarUrl: item.imageUrl || undefined,
+          avatarLabel: "I",
         })),
       ...collections.noteGroups
         .filter((item) => item.pinned && !item.deletedAt && !item.archivedAt)

@@ -1,9 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
 import { Modal } from "@/components/ui/modal";
+import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
@@ -57,6 +58,7 @@ const emptyLinkForm = {
   tags: "",
   groupId: "",
   customIconUrl: "",
+  cornerRadius: 26,
   pinned: false,
   favorite: false,
 };
@@ -66,6 +68,7 @@ const emptyGroupForm = {
   title: "",
   description: "",
   accent: accentOptions[0],
+  cornerRadius: 28,
   collapsed: false,
   pinned: false,
   favorite: false,
@@ -78,6 +81,7 @@ export default function LinksPage() {
   const { t } = useI18n();
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [linkForm, setLinkForm] = useState(emptyLinkForm);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
 
@@ -88,6 +92,17 @@ export default function LinksPage() {
   const groups = useMemo(
     () => filterActive(collections.linkGroups).filter((item) => !item.archivedAt),
     [collections.linkGroups]
+  );
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId]
+  );
+  const selectedGroupLinks = useMemo(
+    () =>
+      selectedGroup
+        ? links.filter((link) => link.groupId === selectedGroup.id)
+        : [],
+    [links, selectedGroup]
   );
 
   const groupPlacements = useMemo(() => {
@@ -217,6 +232,7 @@ export default function LinksPage() {
       tags: link.tags.join(", "),
       groupId: link.groupId ?? "",
       customIconUrl: link.customIconUrl,
+      cornerRadius: link.cornerRadius,
       pinned: link.pinned,
       favorite: link.favorite,
     });
@@ -232,11 +248,13 @@ export default function LinksPage() {
   }
 
   function openEditGroup(group: LinkGroup) {
+    setSelectedGroupId(null);
     setGroupForm({
       id: group.id,
       title: group.title,
       description: group.description,
       accent: group.accent,
+      cornerRadius: group.cornerRadius,
       collapsed: group.collapsed,
       pinned: group.pinned,
       favorite: group.favorite,
@@ -259,6 +277,7 @@ export default function LinksPage() {
         customIconUrl,
         statusText: linkForm.statusText,
         tags: linkForm.tags.split(",").map((item) => item.trim()).filter(Boolean),
+        cornerRadius: linkForm.cornerRadius,
         pinned: linkForm.pinned,
         favorite: linkForm.favorite,
       },
@@ -282,6 +301,7 @@ export default function LinksPage() {
         title: groupForm.title.trim() || t("untitledGroup"),
         description: groupForm.description,
         accent: groupForm.accent,
+        cornerRadius: groupForm.cornerRadius,
         collapsed: groupForm.collapsed,
         pinned: groupForm.pinned,
         favorite: groupForm.favorite,
@@ -316,16 +336,9 @@ export default function LinksPage() {
       return;
     }
 
-    await saveItem("linkGroups", setSpacePlacement(group, LINKS_SPACE, placement));
-
     const deltaX = placement.x - previousPlacement.x;
     const deltaY = placement.y - previousPlacement.y;
-
-    if (!deltaX && !deltaY) {
-      return;
-    }
-
-    const movedLinks = links
+    const movedLinks = collections.links
       .filter((link) => link.groupId === group.id)
       .map((link) => {
         const linkPlacement = getSpacePlacement(
@@ -345,13 +358,16 @@ export default function LinksPage() {
           y: linkPlacement.y + deltaY,
         });
       });
+    const tasks: Array<Promise<void>> = [
+      saveItem("linkGroups", setSpacePlacement(group, LINKS_SPACE, placement)),
+    ];
 
-    if (!movedLinks.length) {
-      return;
+    if (deltaX || deltaY) {
+      const untouchedLinks = collections.links.filter((link) => link.groupId !== group.id);
+      tasks.push(saveMany("links", [...untouchedLinks, ...movedLinks]));
     }
 
-    const untouchedLinks = collections.links.filter((link) => link.groupId !== group.id);
-    await saveMany("links", [...untouchedLinks, ...movedLinks]);
+    await Promise.all(tasks);
   }
 
   async function handleLinkPlacementCommit(
@@ -422,9 +438,25 @@ export default function LinksPage() {
         }
         nodes={nodes}
         onNodeClick={(node) => {
+          if (node.data.kind === "group") {
+            setSelectedGroupId(node.data.group.id);
+            return;
+          }
+
           if (node.data.kind === "link") {
             window.open(normalizeUrl(node.data.link.url), "_blank", "noopener,noreferrer");
           }
+        }}
+        getLinkedNodeIds={(node) => {
+          if (node.data.kind !== "group") {
+            return [];
+          }
+
+          const groupNode = node.data as Extract<LinkBoardData, { kind: "group" }>;
+
+          return links
+            .filter((link) => link.groupId === groupNode.group.id)
+            .map((link) => `link-${link.id}`);
         }}
         onPlacementCommit={(nodeId, placement) => {
           const node = nodes.find((item) => item.id === nodeId);
@@ -441,7 +473,7 @@ export default function LinksPage() {
           void handleLinkPlacementCommit(node.data.link, placement);
         }}
         onViewportChange={setViewport}
-        renderNode={(node) => {
+        renderNode={(node, options) => {
           if (node.data.kind === "group") {
             const groupNode = node.data;
 
@@ -449,6 +481,8 @@ export default function LinksPage() {
               <LinkFrameCard
                 group={groupNode.group}
                 linkCount={groupNode.linkCount}
+                placementWidth={node.placement.width}
+                isDragging={options.isDragging}
                 onEdit={() => openEditGroup(groupNode.group)}
                 onSave={saveGroupItem}
               />
@@ -519,6 +553,22 @@ export default function LinksPage() {
               value={linkForm.statusText}
             />
           </Field>
+          <Field hint={`${linkForm.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={40}
+              min={10}
+              onChange={(event) =>
+                setLinkForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={linkForm.cornerRadius}
+            />
+          </Field>
           <div className="md:col-span-2">
             <Field label={t("fieldDescription")}>
               <Textarea
@@ -577,6 +627,22 @@ export default function LinksPage() {
               ))}
             </Select>
           </Field>
+          <Field hint={`${groupForm.cornerRadius}px`} label={t("fieldRoundness")}>
+            <input
+              className="w-full accent-[var(--app-brand)]"
+              max={48}
+              min={10}
+              onChange={(event) =>
+                setGroupForm((current) => ({
+                  ...current,
+                  cornerRadius: Number(event.target.value),
+                }))
+              }
+              step={1}
+              type="range"
+              value={groupForm.cornerRadius}
+            />
+          </Field>
           <div className="md:col-span-2">
             <Field label={t("fieldDescription")}>
               <Textarea
@@ -589,6 +655,70 @@ export default function LinksPage() {
             </Field>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        footer={
+          <div className="flex justify-between gap-3">
+            <Button
+              onClick={() => {
+                if (selectedGroup) {
+                  openEditGroup(selectedGroup);
+                }
+              }}
+              variant="secondary"
+            >
+              {t("edit")}
+            </Button>
+            <Button onClick={() => setSelectedGroupId(null)}>{t("cancel")}</Button>
+          </div>
+        }
+        onClose={() => setSelectedGroupId(null)}
+        open={!!selectedGroup}
+        size="lg"
+        title={selectedGroup?.title || t("createGroup")}
+      >
+        {selectedGroup ? (
+          <div className="space-y-4">
+            {selectedGroup.description ? (
+              <p className="text-sm leading-6 text-[var(--app-muted)]">
+                {selectedGroup.description}
+              </p>
+            ) : null}
+            {selectedGroupLinks.length ? (
+              <div className="space-y-3">
+                {selectedGroupLinks.map((link) => (
+                  <button
+                    className="flex w-full items-center justify-between rounded-[22px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4 text-left transition hover:bg-[var(--card-hover)]"
+                    key={link.id}
+                    onClick={() =>
+                      window.open(normalizeUrl(link.url), "_blank", "noopener,noreferrer")
+                    }
+                    type="button"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <img
+                        alt={link.title}
+                        className="h-10 w-10 rounded-full object-cover"
+                        draggable={false}
+                        src={link.customIconUrl || link.iconUrl || getFaviconUrl(link.url)}
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-[var(--app-text)]">{link.title}</p>
+                        <p className="truncate text-sm text-[var(--app-muted)]">
+                          {link.statusText || link.description || link.url}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge>{t("open")}</Badge>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <EmptyState description={t("noGroup")} title="" />
+            )}
+          </div>
+        ) : null}
       </Modal>
     </div>
   );
@@ -616,6 +746,7 @@ function LinkTileCard({
     <ObjectTileCard
       avatarUrl={link.customIconUrl || link.iconUrl || getFaviconUrl(link.url)}
       className="cursor-grab active:cursor-grabbing"
+      cornerRadius={link.cornerRadius}
       menu={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -660,25 +791,27 @@ function LinkTileCard({
 function LinkFrameCard({
   group,
   linkCount,
+  placementWidth,
+  isDragging,
   onEdit,
   onSave,
 }: {
   group: LinkGroup;
   linkCount: number;
+  placementWidth: number;
+  isDragging: boolean;
   onEdit: () => void;
   onSave: (item: LinkGroup) => Promise<void>;
 }) {
   const { t } = useI18n();
 
   return (
-    <CardFrameSurface accent={group.accent}>
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-xl font-semibold text-white">{group.title}</p>
-          {group.description ? (
-            <p className="mt-1 truncate text-sm text-white/50">{group.description}</p>
-          ) : null}
-        </div>
+    <CanvasFrame
+      accent={group.accent}
+      cornerRadius={group.cornerRadius}
+      count={linkCount}
+      isDragging={isDragging}
+      menu={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -707,31 +840,10 @@ function LinkFrameCard({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-
-      <div className="relative mt-5 flex-1 rounded-[24px] border border-white/10 bg-black/72" />
-
-      <div className="relative mt-4 flex items-center justify-between gap-3">
-        <span className="text-sm text-white/52">{t("listFrameHint")}</span>
-        <Badge className="border-white/10 bg-white/5 text-white/70">{linkCount}</Badge>
-      </div>
-    </CardFrameSurface>
-  );
-}
-
-function CardFrameSurface({
-  accent,
-  children,
-}: {
-  accent: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="group relative flex h-full min-h-0 cursor-grab flex-col overflow-hidden rounded-[28px] border border-white/10 bg-black/85 p-4 shadow-[0_24px_80px_-48px_rgba(0,0,0,0.95)] active:cursor-grabbing">
-      <div
-        className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent} opacity-25 transition-opacity duration-200 group-hover:opacity-35`}
-      />
-      {children}
-    </div>
+      }
+      placementWidth={placementWidth}
+      subtitle={group.description || t("links")}
+      title={group.title}
+    />
   );
 }
