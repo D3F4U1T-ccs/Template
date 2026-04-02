@@ -1,0 +1,142 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 27% 97%;
+    --foreground: 224 42% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 42% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 42% 10%;
+    --primary: 191 96% 43%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 214 28% 93%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 28% 93%;
+    --muted-foreground: 215 16% 40%;
+    --accent: 214 28% 93%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 216 18% 86%;
+    --input: 216 18% 86%;
+    --ring: 191 96% 43%;
+    --chart-1: 191 96% 43%;
+    --chart-2: 161 84% 39%;
+    --chart-3: 32 95% 44%;
+    --chart-4: 338 81% 51%;
+    --chart-5: 262 83% 58%;
+    --radius: 1rem;
+    --app-bg: #f6f6f2;
+    --app-bg-elevated: #ffffff;
+    --app-sidebar: rgba(255, 255, 255, 0.84);
+    --app-panel: rgba(255, 255, 255, 0.76);
+    --app-panel-strong: #ffffff;
+    --app-panel-soft: rgba(15, 23, 42, 0.03);
+    --app-text: #121318;
+    --app-muted: #5f6472;
+    --app-border: rgba(15, 23, 42, 0.08);
+    --app-brand: #2164ff;
+    --app-brand-soft: rgba(33, 100, 255, 0.12);
+    --app-overlay: rgba(15, 23, 42, 0.18);
+    --shadow-soft: 0 20px 55px -34px rgba(15, 23, 42, 0.18);
+    --canvas-shell: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.74));
+    --canvas-dot: rgba(15, 23, 42, 0.08);
+    --canvas-spotlight: rgba(33, 100, 255, 0.08);
+    --card-idle: rgba(15, 23, 42, 0.04);
+    --card-hover: rgba(15, 23, 42, 0.07);
+  }
+
+  .dark {
+    --background: 223 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 223 47% 7%;
+    --card-foreground: 210 40% 98%;
+    --popover: 223 47% 7%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 191 92% 54%;
+    --primary-foreground: 224 71% 4%;
+    --secondary: 217 33% 14%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 14%;
+    --muted-foreground: 215 20% 67%;
+    --accent: 217 33% 14%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 73% 46%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 191 92% 54%;
+    --chart-1: 191 92% 54%;
+    --chart-2: 161 84% 39%;
+    --chart-3: 34 96% 58%;
+    --chart-4: 338 84% 60%;
+    --chart-5: 262 89% 66%;
+    --app-bg: #121214;
+    --app-bg-elevated: #18191c;
+    --app-sidebar: rgba(24, 25, 28, 0.92);
+    --app-panel: rgba(29, 30, 34, 0.78);
+    --app-panel-strong: #1f2024;
+    --app-panel-soft: rgba(255, 255, 255, 0.03);
+    --app-text: #f2f3f5;
+    --app-muted: #9b9faa;
+    --app-border: rgba(255, 255, 255, 0.08);
+    --app-brand: #7c89ff;
+    --app-brand-soft: rgba(124, 137, 255, 0.14);
+    --app-overlay: rgba(5, 7, 12, 0.66);
+    --shadow-soft: 0 24px 70px -42px rgba(0, 0, 0, 0.7);
+    --canvas-shell: linear-gradient(180deg, rgba(33, 34, 39, 0.98), rgba(22, 23, 27, 0.98));
+    --canvas-dot: rgba(255, 255, 255, 0.05);
+    --canvas-spotlight: rgba(124, 137, 255, 0.1);
+    --card-idle: rgba(255, 255, 255, 0.03);
+    --card-hover: rgba(255, 255, 255, 0.06);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow: hidden;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    font-family: "Manrope", "Segoe UI", sans-serif;
+    color: var(--app-text);
+    background:
+      radial-gradient(circle at top left, var(--canvas-spotlight), transparent 24%),
+      linear-gradient(180deg, var(--app-bg), var(--app-bg));
+    overflow: hidden;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: "Space Grotesk", "Manrope", sans-serif;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  ::selection {
+    background: var(--app-brand-soft);
+    color: var(--app-text);
+  }
+}
