@@ -32,6 +32,7 @@ export function createBaseEntity(order = 1): BaseEntity {
     archivedAt: null,
     deletedAt: null,
     dashboardGroupId: null,
+    parentGroupId: null,
     order,
     tags: [],
     lastViewedAt: null,
@@ -57,6 +58,8 @@ export function upsertEntity<T extends BaseEntity>(
     order: current?.order ?? patch.order ?? order,
     dashboardGroupId:
       patch.dashboardGroupId ?? current?.dashboardGroupId ?? base.dashboardGroupId,
+    parentGroupId:
+      patch.parentGroupId ?? current?.parentGroupId ?? base.parentGroupId,
     tags: patch.tags ?? current?.tags ?? [],
     spacePlacements:
       patch.spacePlacements ?? current?.spacePlacements ?? base.spacePlacements,

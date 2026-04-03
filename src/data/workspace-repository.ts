@@ -258,6 +258,7 @@ function normalizeBaseEntity(id: string, value: unknown): BaseEntity {
     archivedAt: readNullableString(record, "archivedAt"),
     deletedAt: readNullableString(record, "deletedAt"),
     dashboardGroupId: readNullableString(record, "dashboardGroupId"),
+    parentGroupId: readNullableString(record, "parentGroupId"),
     order: readNumber(record, "order", 1),
     tags: readStringArray(record, "tags"),
     lastViewedAt: readNullableString(record, "lastViewedAt"),
@@ -388,10 +389,11 @@ function normalizeBoardTextItem(id: string, value: unknown): BoardTextItem {
     fontFamily: readString(record, "fontFamily", "\"Sora\", \"Trebuchet MS\", sans-serif"),
     fontSize: Math.min(Math.max(readNumber(record, "fontSize", 28), 14), 72),
     textColor: readString(record, "textColor", "#f8fafc"),
+    backgroundColor: readString(record, "backgroundColor", "#1d4ed8"),
     tone:
       typeof record.tone === "string" && record.tone === "soft"
         ? "glass"
-        : readEnumValue(record.tone, BOARD_TEXT_TONES, "glass"),
+        : readEnumValue(record.tone, BOARD_TEXT_TONES, "plain"),
   };
 }
 

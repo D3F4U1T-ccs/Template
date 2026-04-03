@@ -12,6 +12,7 @@ export type BoardTextFormState = {
   fontFamily: string;
   fontSize: number;
   textColor: string;
+  backgroundColor: string;
   tone: BoardTextTone;
   cornerRadius: number;
 };
@@ -89,6 +90,13 @@ export function BoardTextEditorModal({
             onChange={(event) => onChange({ ...form, textColor: event.target.value })}
             placeholder="#f8fafc"
             value={form.textColor}
+          />
+        </Field>
+        <Field label={t("fieldBackgroundColor")}>
+          <Input
+            onChange={(event) => onChange({ ...form, backgroundColor: event.target.value })}
+            placeholder="#1d4ed8"
+            value={form.backgroundColor}
           />
         </Field>
         <Field label={t("fieldType")}>

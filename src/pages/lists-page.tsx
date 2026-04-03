@@ -7,6 +7,10 @@ import { useI18n } from "@/data/i18n";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
+import {
+  SpaceObjectFinder,
+  type SpaceObjectFinderItem,
+} from "@/components/ui/space-object-finder";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
 import { useAppData } from "@/hooks/use-app-data";
@@ -31,20 +35,25 @@ import {
   moveEntity,
   nextOrder,
   setSpacePlacement,
+  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
 import {
-  DEFAULT_TEXT_SIZE,
   DEFAULT_TEXT_STYLE,
   LIST_FRAME_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getBoardTextPlacementSize,
   getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
-import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
+import {
+  createGridPlacement,
+  createViewportCenteredOnPlacement,
+  getPlacementOverlapRatio,
+} from "@/utils/space";
 
 const LISTS_SPACE: WorkspaceSpaceKey = "lists-board";
 const FRAME_MIN_WIDTH = 420;
@@ -188,7 +197,9 @@ export default function ListsPage() {
   );
   const boardTexts = useMemo(
     () =>
-      filterActive(collections.boardTexts).filter((item) => item.space === LISTS_SPACE),
+      filterActive(collections.boardTexts).filter(
+        (item) => item.space === LISTS_SPACE && !item.archivedAt
+      ),
     [collections.boardTexts]
   );
 
@@ -319,36 +330,83 @@ export default function ListsPage() {
       };
     });
 
-    const textNodes: Array<SpaceCanvasNode<ListBoardNodeData>> = boardTexts.map((text, index) => ({
-      id: `text-${text.id}`,
-      data: {
-        kind: "text",
-        text,
-      },
-      placement: getSpacePlacement(
+    const textNodes: Array<SpaceCanvasNode<ListBoardNodeData>> = boardTexts.map((text, index) => {
+      const textSize = getBoardTextPlacementSize(text);
+      const basePlacement = getSpacePlacement(
         text,
         LISTS_SPACE,
         createGridPlacement(index, {
           startX: 940,
           startY: 120,
-          width: DEFAULT_TEXT_SIZE.width,
-          height: DEFAULT_TEXT_SIZE.height,
+          width: textSize.width,
+          height: textSize.height,
           columns: 2,
           gapX: 28,
           gapY: 28,
         })
-      ),
-      resizable: true,
-      resizeMode: "font-size",
-      minSize: {
-        width: 220,
-        height: 120,
-      },
-      zIndex: 60,
-    }));
+      );
+
+      return {
+        id: `text-${text.id}`,
+        data: {
+          kind: "text",
+          text,
+        },
+        placement: {
+          ...basePlacement,
+          width: textSize.width,
+          height: textSize.height,
+        },
+        resizable: true,
+        resizeMode: "font-size",
+        minSize: {
+          width: 220,
+          height: 120,
+        },
+        zIndex: 60,
+      };
+    });
 
     return [...frameNodes, ...itemNodes, ...textNodes];
   }, [activeItems, boardTexts, framePlacements, lists]);
+
+  const finderItems = useMemo<Array<SpaceObjectFinderItem>>(
+    () =>
+      nodes.map((node) => {
+        if (node.data.kind === "frame") {
+          return {
+            id: node.id,
+            title: node.data.list.title,
+            subtitle: node.data.list.description || node.data.list.listType || t("lists"),
+            kindLabel: t("objectTypeList"),
+            placement: node.placement,
+          };
+        }
+
+        if (node.data.kind === "text") {
+          return {
+            id: node.id,
+            title:
+              node.data.text.content
+                .split("\n")
+                .map((line) => line.trim())
+                .find(Boolean) || t("createText"),
+            subtitle: t("lists"),
+            kindLabel: t("objectTypeText"),
+            placement: node.placement,
+          };
+        }
+
+        return {
+          id: node.id,
+          title: node.data.item.title,
+          subtitle: node.data.item.description || node.data.list?.title || t("lists"),
+          kindLabel: t("objectTypeItem"),
+          placement: node.placement,
+        };
+      }),
+    [nodes, t]
+  );
 
   function openCreateList() {
     setListForm({
@@ -382,25 +440,27 @@ export default function ListsPage() {
   }
 
   function openCreateText() {
+    const draftText = upsertEntity<BoardTextItem>(
+      undefined,
+      {
+        title: "",
+        description: "",
+        space: LISTS_SPACE,
+        content: "",
+        fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+        fontSize: DEFAULT_TEXT_STYLE.fontSize,
+        textColor: DEFAULT_TEXT_STYLE.textColor,
+        backgroundColor: DEFAULT_TEXT_STYLE.backgroundColor,
+        tone: DEFAULT_TEXT_STYLE.tone,
+        cornerRadius: 0,
+      },
+      nextOrder(collections.boardTexts)
+    );
     const nextText = ensureEntityCenteredInSpace(
-      upsertEntity<BoardTextItem>(
-        undefined,
-        {
-          title: "",
-          description: "",
-          space: LISTS_SPACE,
-          content: "",
-          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
-          fontSize: DEFAULT_TEXT_STYLE.fontSize,
-          textColor: DEFAULT_TEXT_STYLE.textColor,
-          tone: DEFAULT_TEXT_STYLE.tone,
-          cornerRadius: 0,
-        },
-        nextOrder(collections.boardTexts)
-      ),
+      draftText,
       LISTS_SPACE,
       viewport,
-      DEFAULT_TEXT_SIZE
+      getBoardTextPlacementSize(draftText)
     );
 
     setSelectedTextId(nextText.id);
@@ -674,7 +734,6 @@ export default function ListsPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             return;
           }
 
@@ -707,7 +766,6 @@ export default function ListsPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             void saveItem("boardTexts", setSpacePlacement(node.data.text, LISTS_SPACE, placement));
             return;
           }
@@ -722,7 +780,6 @@ export default function ListsPage() {
             return;
           }
 
-          setSelectedTextId(text.id);
           void saveItem("boardTexts", {
             ...text,
             fontSize: getFontSizeFromResize({
@@ -773,12 +830,39 @@ export default function ListsPage() {
                 active={selectedTextId === textNode.text.id}
                 item={textNode.text}
                 onActivate={() => setSelectedTextId(textNode.text.id)}
+                onDeactivate={() =>
+                  setSelectedTextId((current) =>
+                    current === textNode.text.id ? null : current
+                  )
+                }
                 onSave={(patch) =>
                   void saveItem("boardTexts", {
                     ...textNode.text,
                     ...patch,
                   })
                 }
+                onTogglePin={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      togglePinned(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onToggleFavorite={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      toggleFavorite(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onArchive={() => void saveItem("boardTexts", toggleArchive(textNode.text))}
+                onDelete={() => void hardDelete("boardTexts", textNode.text.id)}
                 previewFontSize={getFontSizeFromResize({
                   currentFontSize: textNode.text.fontSize,
                   origin: node.placement,
@@ -809,6 +893,13 @@ export default function ListsPage() {
         }}
         size={{ width: 4400, height: 2800 }}
         viewport={viewport}
+      />
+
+      <SpaceObjectFinder
+        items={finderItems}
+        onFocusItem={(item) =>
+          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+        }
       />
 
       <Modal

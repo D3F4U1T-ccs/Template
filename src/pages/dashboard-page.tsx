@@ -7,6 +7,10 @@ import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
+import {
+  SpaceObjectFinder,
+  type SpaceObjectFinderItem,
+} from "@/components/ui/space-object-finder";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
 import { useI18n } from "@/data/i18n";
@@ -30,20 +34,25 @@ import {
   nextOrder,
   setDashboardGroupId,
   setSpacePlacement,
+  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
 import {
-  DEFAULT_TEXT_SIZE,
   DEFAULT_TEXT_STYLE,
   LINK_GROUP_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getBoardTextPlacementSize,
   getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
-import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
+import {
+  createGridPlacement,
+  createViewportCenteredOnPlacement,
+  getPlacementOverlapRatio,
+} from "@/utils/space";
 
 type DashboardPinnedItem = {
   id: string;
@@ -255,7 +264,12 @@ export default function DashboardPage() {
   );
   const boardTexts = useMemo(
     () =>
-      filterActive(collections.boardTexts).filter((item) => item.space === DASHBOARD_SPACE),
+      filterActive(collections.boardTexts).filter(
+        (item) =>
+          !item.archivedAt &&
+          (item.space === DASHBOARD_SPACE ||
+            (!!item.pinned && !!item.spacePlacements?.[DASHBOARD_SPACE]))
+      ),
     [collections.boardTexts]
   );
   const pinnedItems = useMemo(() => buildPinnedItems(collections, t), [collections, t]);
@@ -375,34 +389,92 @@ export default function DashboardPage() {
       };
     });
 
-    const textNodes: Array<SpaceCanvasNode<DashboardNodeData>> = boardTexts.map((text, index) => ({
-      id: `text-${text.id}`,
-      data: {
-        kind: "text",
-        text,
-      },
-      placement:
+    const textNodes: Array<SpaceCanvasNode<DashboardNodeData>> = boardTexts.map((text, index) => {
+      const textSize = getBoardTextPlacementSize(text);
+      const basePlacement =
         text.spacePlacements?.[DASHBOARD_SPACE] ??
         createGridPlacement(index, {
           startX: 1040,
           startY: 120,
-          width: DEFAULT_TEXT_SIZE.width,
-          height: DEFAULT_TEXT_SIZE.height,
+          width: textSize.width,
+          height: textSize.height,
           columns: 2,
           gapX: 28,
           gapY: 28,
-        }),
-      resizable: true,
-      resizeMode: "font-size",
-      minSize: {
-        width: 220,
-        height: 120,
-      },
-      zIndex: 60,
-    }));
+        });
+
+      return {
+        id: `text-${text.id}`,
+        data: {
+          kind: "text",
+          text,
+        },
+        placement: {
+          ...basePlacement,
+          width: textSize.width,
+          height: textSize.height,
+        },
+        resizable: true,
+        resizeMode: "font-size",
+        minSize: {
+          width: 220,
+          height: 120,
+        },
+        zIndex: 60,
+      };
+    });
 
     return [...groupNodes, ...itemNodes, ...textNodes];
   }, [boardTexts, groupPlacements, groupedPinnedItems, groups, pinnedItems]);
+
+  const finderItems = useMemo<Array<SpaceObjectFinderItem>>(
+    () =>
+      nodes.map((node) => {
+        if (node.data.kind === "group") {
+          return {
+            id: node.id,
+            title: node.data.group.title,
+            subtitle: node.data.group.description || t("dashboard"),
+            kindLabel: t("objectTypeGroup"),
+            placement: node.placement,
+          };
+        }
+
+        if (node.data.kind === "text") {
+          return {
+            id: node.id,
+            title:
+              node.data.text.content
+                .split("\n")
+                .map((line) => line.trim())
+                .find(Boolean) || t("createText"),
+            subtitle: t("dashboard"),
+            kindLabel: t("objectTypeText"),
+            placement: node.placement,
+          };
+        }
+
+        const kindLabelMap = {
+          links: t("objectTypeLink"),
+          linkGroups: t("objectTypeGroup"),
+          taskGroups: t("objectTypeGroup"),
+          tasks: t("objectTypeTask"),
+          listItems: t("objectTypeItem"),
+          notes: t("objectTypeNote"),
+          noteGroups: t("objectTypeGroup"),
+          lists: t("objectTypeList"),
+        } as const;
+
+        return {
+          id: node.id,
+          title: node.data.item.title,
+          subtitle: node.data.item.subtitle,
+          kindLabel: kindLabelMap[node.data.item.collectionName],
+          placement: node.placement,
+        };
+      }),
+    [nodes, t]
+  );
 
   const selectedGroupItems = useMemo(
     () =>
@@ -434,25 +506,27 @@ export default function DashboardPage() {
   }
 
   function openCreateText() {
+    const draftText = upsertEntity<BoardTextItem>(
+      undefined,
+      {
+        title: "",
+        description: "",
+        space: DASHBOARD_SPACE,
+        content: "",
+        fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+        fontSize: DEFAULT_TEXT_STYLE.fontSize,
+        textColor: DEFAULT_TEXT_STYLE.textColor,
+        backgroundColor: DEFAULT_TEXT_STYLE.backgroundColor,
+        tone: DEFAULT_TEXT_STYLE.tone,
+        cornerRadius: 0,
+      },
+      nextOrder(collections.boardTexts)
+    );
     const nextText = ensureEntityCenteredInSpace(
-      upsertEntity<BoardTextItem>(
-        undefined,
-        {
-          title: "",
-          description: "",
-          space: DASHBOARD_SPACE,
-          content: "",
-          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
-          fontSize: DEFAULT_TEXT_STYLE.fontSize,
-          textColor: DEFAULT_TEXT_STYLE.textColor,
-          tone: DEFAULT_TEXT_STYLE.tone,
-          cornerRadius: 0,
-        },
-        nextOrder(collections.boardTexts)
-      ),
+      draftText,
       DASHBOARD_SPACE,
       viewport,
-      DEFAULT_TEXT_SIZE
+      getBoardTextPlacementSize(draftText)
     );
 
     setSelectedTextId(nextText.id);
@@ -633,7 +707,6 @@ export default function DashboardPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             return;
           }
 
@@ -664,7 +737,6 @@ export default function DashboardPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             void saveItem("boardTexts", setSpacePlacement(node.data.text, DASHBOARD_SPACE, placement));
             return;
           }
@@ -679,7 +751,6 @@ export default function DashboardPage() {
             return;
           }
 
-          setSelectedTextId(text.id);
           void saveItem("boardTexts", {
             ...text,
             fontSize: getFontSizeFromResize({
@@ -740,12 +811,39 @@ export default function DashboardPage() {
                 active={selectedTextId === textNode.text.id}
                 item={textNode.text}
                 onActivate={() => setSelectedTextId(textNode.text.id)}
+                onDeactivate={() =>
+                  setSelectedTextId((current) =>
+                    current === textNode.text.id ? null : current
+                  )
+                }
                 onSave={(patch) =>
                   void saveItem("boardTexts", {
                     ...textNode.text,
                     ...patch,
                   })
                 }
+                onTogglePin={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      togglePinned(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onToggleFavorite={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      toggleFavorite(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onArchive={() => void saveItem("boardTexts", toggleArchive(textNode.text))}
+                onDelete={() => void hardDelete("boardTexts", textNode.text.id)}
                 previewFontSize={getFontSizeFromResize({
                   currentFontSize: textNode.text.fontSize,
                   origin: node.placement,
@@ -826,6 +924,13 @@ export default function DashboardPage() {
         }}
         size={{ width: 4200, height: 2600 }}
         viewport={viewport}
+      />
+
+      <SpaceObjectFinder
+        items={finderItems}
+        onFocusItem={(item) =>
+          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+        }
       />
 
       <Modal

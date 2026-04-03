@@ -196,12 +196,12 @@ export function SpaceCanvas<T>({
       nodes.map((node) => ({
         ...node,
         placement:
-          node.resizeMode === "font-size"
+          node.resizeMode === "font-size" && resizingId === node.id
             ? node.placement
             : draftPlacements[node.id] ?? node.placement,
         previewPlacement: draftPlacements[node.id] ?? node.placement,
       })),
-    [draftPlacements, nodes]
+    [draftPlacements, nodes, resizingId]
   );
 
   useEffect(() => {
@@ -608,7 +608,10 @@ export function SpaceCanvas<T>({
                 previewPlacement: node.previewPlacement,
               })}
               {node.resizable
-                ? resizeHandles.map((handle) => (
+                ? (node.resizeMode === "font-size"
+                    ? resizeHandles.filter((handle) => handle.direction === "se")
+                    : resizeHandles
+                  ).map((handle) => (
                     <div
                       className={cn("absolute z-20 rounded-full", handle.className)}
                       data-space-no-drag="true"

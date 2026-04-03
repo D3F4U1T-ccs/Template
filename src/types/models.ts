@@ -50,6 +50,7 @@ export interface BaseEntity {
   archivedAt: string | null;
   deletedAt: string | null;
   dashboardGroupId?: string | null;
+  parentGroupId?: string | null;
   order: number;
   tags: string[];
   lastViewedAt: string | null;
@@ -156,6 +157,7 @@ export interface BoardTextItem extends BaseEntity {
   fontFamily: string;
   fontSize: number;
   textColor: string;
+  backgroundColor: string;
   tone: BoardTextTone;
 }
 

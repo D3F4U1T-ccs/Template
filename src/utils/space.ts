@@ -142,6 +142,21 @@ export function createPlacementAtViewportCenter(
   };
 }
 
+export function createViewportCenteredOnPlacement(
+  placement: SpacePlacement,
+  viewport: SpaceViewport,
+  surface = getDefaultSurfaceSize()
+): SpaceViewport {
+  const centerX = placement.x + placement.width / 2;
+  const centerY = placement.y + placement.height / 2;
+
+  return {
+    x: surface.width / 2 - centerX * viewport.zoom,
+    y: surface.height / 2 - centerY * viewport.zoom,
+    zoom: viewport.zoom,
+  };
+}
+
 type ContainerLayoutOptions = Partial<{
   columns: number;
   gapX: number;

@@ -1,20 +1,30 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { MoreHorizontal } from "lucide-react";
 
+import { boardTextFontOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
 import { cn } from "@/shared/lib/utils";
 import { Button } from "@/shared/ui/button";
-import type { BoardTextItem, BoardTextTone } from "@/types/models";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu";
+import type { BoardTextItem } from "@/types/models";
 
 import { Modal } from "@/components/ui/modal";
+import { Field, Select, Textarea } from "@/components/ui/primitives";
 
-function getTextToneClasses(tone: BoardTextTone) {
+function getToneClasses(tone: BoardTextItem["tone"]) {
   switch (tone) {
     case "plain":
-      return "border-transparent bg-transparent shadow-none backdrop-blur-0";
+      return "";
     case "solid":
-      return "border-[var(--app-border)] bg-[var(--app-panel)]/96 shadow-[var(--shadow-soft)]";
+      return "rounded-[24px] border border-black/10 px-4 py-3 shadow-[var(--shadow-soft)]";
     case "glass":
-      return "border-white/15 bg-white/8 shadow-[var(--shadow-soft)] backdrop-blur-xl";
+      return "rounded-[24px] border border-white/15 bg-white/10 px-4 py-3 shadow-[var(--shadow-soft)] backdrop-blur-xl";
   }
 }
 
@@ -24,25 +34,68 @@ export function BoardTextCard({
   active = false,
   previewFontSize,
   onActivate,
+  onDeactivate,
   onSave,
+  onTogglePin,
+  onToggleFavorite,
+  onArchive,
+  onDelete,
 }: {
   item: BoardTextItem;
   className?: string;
   active?: boolean;
   previewFontSize?: number;
   onActivate?: () => void;
+  onDeactivate?: () => void;
   onSave: (patch: Partial<BoardTextItem>) => void;
+  onTogglePin?: () => void;
+  onToggleFavorite?: () => void;
+  onArchive?: () => void;
+  onDelete?: () => void;
 }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(item.content);
-  const [styleOpen, setStyleOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState(() => ({
+    content: item.content,
+    fontFamily: item.fontFamily,
+    textColor: item.textColor,
+    backgroundColor: item.backgroundColor,
+    tone: item.tone,
+  }));
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const colorInputId = useId();
   const effectiveFontSize = previewFontSize ?? item.fontSize;
+  const isPlain = item.tone === "plain";
+  const containerStyle =
+    item.tone === "solid"
+      ? {
+          backgroundColor: item.backgroundColor,
+          borderRadius: item.cornerRadius,
+        }
+      : item.tone === "glass"
+        ? {
+            borderRadius: item.cornerRadius,
+          }
+        : undefined;
 
   useEffect(() => {
     setDraft(item.content);
-  }, [item.content, item.id]);
+    setSettingsDraft({
+      content: item.content,
+      fontFamily: item.fontFamily,
+      textColor: item.textColor,
+      backgroundColor: item.backgroundColor,
+      tone: item.tone,
+    });
+  }, [
+    item.backgroundColor,
+    item.content,
+    item.fontFamily,
+    item.id,
+    item.textColor,
+    item.tone,
+  ]);
 
   useEffect(() => {
     if (!active) {
@@ -58,144 +111,259 @@ export function BoardTextCard({
     return () => cancelAnimationFrame(frame);
   }, [active]);
 
-  function commit() {
-    if (draft === item.content) {
-      return;
+  function closeSettings() {
+    setSettingsDraft({
+      content: item.content,
+      fontFamily: item.fontFamily,
+      textColor: item.textColor,
+      backgroundColor: item.backgroundColor,
+      tone: item.tone,
+    });
+    setSettingsOpen(false);
+  }
+
+  function commitInline() {
+    if (draft !== item.content) {
+      onSave({ content: draft });
     }
 
-    onSave({ content: draft });
+    onDeactivate?.();
+  }
+
+  function saveSettings() {
+    onSave({
+      content: settingsDraft.content,
+      fontFamily: settingsDraft.fontFamily,
+      textColor: settingsDraft.textColor,
+      backgroundColor: settingsDraft.backgroundColor,
+      tone: settingsDraft.tone,
+    });
+    setSettingsOpen(false);
   }
 
   return (
     <>
-      <div
-        className={cn(
-          "relative flex h-full min-h-0 flex-col overflow-visible rounded-[26px] border p-4 transition",
-          getTextToneClasses(item.tone),
-          active && "ring-2 ring-[var(--app-brand)]",
-          className
-        )}
-        onDoubleClick={() => onActivate?.()}
-        style={{ borderRadius: item.cornerRadius }}
-      >
-        {active ? (
+      <div className={cn("relative h-full w-full overflow-visible", className)}>
+        <div className="group relative inline-flex max-w-full overflow-visible">
           <div
-            className="absolute -top-12 left-0 z-[80] flex items-center gap-2 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-elevated)]/95 px-2 py-2 shadow-[var(--shadow-soft)] backdrop-blur"
-            data-space-no-drag="true"
+            className={cn(
+              "relative max-w-full whitespace-pre-wrap break-words text-left leading-[1.15] transition",
+              !isPlain && getToneClasses(item.tone)
+            )}
+            onDoubleClick={() => onActivate?.()}
+            style={containerStyle}
           >
-            <label
-              className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[var(--app-border)]"
-              htmlFor={colorInputId}
-              style={{ backgroundColor: item.textColor }}
-              title={t("fieldTextColor")}
-            >
-              <input
-                className="sr-only"
+            {!active ? (
+              <div
+                style={{
+                  color: item.textColor,
+                  fontFamily: item.fontFamily,
+                  fontSize: `${effectiveFontSize}px`,
+                }}
+              >
+                {item.content || (
+                  <span className="text-white/35">{t("placeholderTextBlock")}</span>
+                )}
+              </div>
+            ) : (
+              <textarea
+                className={cn(
+                  "min-h-[1.2em] w-full max-w-full resize-none overflow-hidden border-0 bg-transparent p-0 outline-none",
+                  !isPlain && "min-w-[240px]"
+                )}
                 data-space-no-drag="true"
-                id={colorInputId}
-                onChange={(event) => onSave({ textColor: event.target.value })}
-                type="color"
-                value={item.textColor}
+                onBlur={commitInline}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    commitInline();
+                    textareaRef.current?.blur();
+                  }
+                }}
+                placeholder={t("placeholderTextBlock")}
+                ref={textareaRef}
+                rows={Math.max(draft.split("\n").length, 1)}
+                style={{
+                  color: item.textColor,
+                  fontFamily: item.fontFamily,
+                  fontSize: `${effectiveFontSize}px`,
+                  lineHeight: 1.15,
+                }}
+                value={draft}
               />
-            </label>
-            <Button
-              data-space-no-drag="true"
-              onClick={() => setStyleOpen(true)}
-              size="sm"
-              variant="secondary"
-            >
-              {t("fieldType")}
-            </Button>
-          </div>
-        ) : null}
+            )}
 
-        {active ? (
-          <textarea
-            className="h-full min-h-0 w-full resize-none border-0 bg-transparent p-0 leading-[1.15] outline-none"
-            data-space-no-drag="true"
-            onBlur={commit}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                commit();
-                textareaRef.current?.blur();
-              }
-            }}
-            placeholder={t("placeholderTextBlock")}
-            ref={textareaRef}
-            style={{
-              color: item.textColor,
-              fontFamily: item.fontFamily,
-              fontSize: `${effectiveFontSize}px`,
-            }}
-            value={draft}
-          />
-        ) : (
-          <div
-            className="min-h-0 flex-1 whitespace-pre-wrap break-words leading-[1.15]"
-            style={{
-              color: item.textColor,
-              fontFamily: item.fontFamily,
-              fontSize: `${effectiveFontSize}px`,
-            }}
-          >
-            {item.content || " "}
+            <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className={cn(
+                    "absolute -right-8 -top-2 h-8 w-8 rounded-full transition",
+                    menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                  )}
+                  data-space-no-drag="true"
+                  onClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  size="icon"
+                  type="button"
+                  variant="secondary"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSettingsOpen(true);
+                    setMenuOpen(false);
+                  }}
+                >
+                  {t("editText")}
+                </DropdownMenuItem>
+                {onTogglePin ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      onTogglePin();
+                      setMenuOpen(false);
+                    }}
+                  >
+                    {item.pinned ? t("unpin") : t("pin")}
+                  </DropdownMenuItem>
+                ) : null}
+                {onToggleFavorite ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      onToggleFavorite();
+                      setMenuOpen(false);
+                    }}
+                  >
+                    {item.favorite ? t("removeFavorite") : t("favorite")}
+                  </DropdownMenuItem>
+                ) : null}
+                {onArchive || onDelete ? <DropdownMenuSeparator /> : null}
+                {onArchive ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      onArchive();
+                      setMenuOpen(false);
+                    }}
+                  >
+                    {t("archive")}
+                  </DropdownMenuItem>
+                ) : null}
+                {onDelete ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      onDelete();
+                      setMenuOpen(false);
+                    }}
+                  >
+                    {t("delete")}
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-        )}
+        </div>
       </div>
 
       <Modal
         footer={
           <div className="flex justify-end gap-3">
-            <Button onClick={() => setStyleOpen(false)}>{t("save")}</Button>
+            <Button onClick={closeSettings} variant="ghost">
+              {t("cancel")}
+            </Button>
+            <Button onClick={saveSettings}>{t("save")}</Button>
           </div>
         }
-        onClose={() => setStyleOpen(false)}
-        open={styleOpen}
-        title={t("fieldType")}
+        onClose={closeSettings}
+        open={settingsOpen}
+        title={t("editText")}
       >
-        <div className="grid gap-3 md:grid-cols-3">
-          {([
-            ["plain", t("textTonePlain")],
-            ["solid", t("textToneSolid")],
-            ["glass", t("textToneGlass")],
-          ] as const).map(([tone, label]) => (
-            <button
-              className={cn(
-                "rounded-[22px] border px-4 py-6 text-left transition",
-                item.tone === tone
-                  ? "border-[var(--app-brand)] bg-[var(--app-brand-soft)]"
-                  : "border-[var(--app-border)] bg-[var(--app-panel-soft)] hover:bg-[var(--card-hover)]"
-              )}
-              data-space-no-drag="true"
-              key={tone}
-              onClick={() => {
-                onSave({ tone });
-                setStyleOpen(false);
-              }}
-              type="button"
-            >
-              <div
-                className={cn(
-                  "mb-4 h-16 rounded-[18px] border p-3",
-                  getTextToneClasses(tone)
-                )}
+        <div className="grid gap-4">
+          <Field label={t("fieldText")}>
+            <Textarea
+              className="min-h-[220px]"
+              onChange={(event) =>
+                setSettingsDraft((current) => ({
+                  ...current,
+                  content: event.target.value,
+                }))
+              }
+              placeholder={t("placeholderTextBlock")}
+              value={settingsDraft.content}
+            />
+          </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label={t("fieldFont")}>
+              <Select
+                onChange={(event) =>
+                  setSettingsDraft((current) => ({
+                    ...current,
+                    fontFamily: event.target.value,
+                  }))
+                }
+                value={settingsDraft.fontFamily}
               >
-                <div
-                  className="truncate"
-                  style={{
-                    color: item.textColor,
-                    fontFamily: item.fontFamily,
-                    fontSize: "20px",
-                  }}
-                >
-                  Aa
-                </div>
+                {boardTextFontOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label={t("fieldType")}>
+              <Select
+                onChange={(event) =>
+                  setSettingsDraft((current) => ({
+                    ...current,
+                    tone: event.target.value as BoardTextItem["tone"],
+                  }))
+                }
+                value={settingsDraft.tone}
+              >
+                <option value="plain">{t("textTonePlain")}</option>
+                <option value="solid">{t("textToneSolid")}</option>
+                <option value="glass">{t("textToneGlass")}</option>
+              </Select>
+            </Field>
+            <Field label={t("fieldTextColor")}>
+              <div className="flex items-center gap-3">
+                <input
+                  className="h-11 w-14 cursor-pointer rounded-2xl border border-[var(--app-border)] bg-transparent p-1"
+                  onChange={(event) =>
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      textColor: event.target.value,
+                    }))
+                  }
+                  type="color"
+                  value={settingsDraft.textColor}
+                />
+                <span className="text-sm text-[var(--app-muted)]">{settingsDraft.textColor}</span>
               </div>
-              <p className="font-medium text-[var(--app-text)]">{label}</p>
-            </button>
-          ))}
+            </Field>
+            {settingsDraft.tone === "solid" ? (
+              <Field label={t("fieldBackgroundColor")}>
+                <div className="flex items-center gap-3">
+                  <input
+                    className="h-11 w-14 cursor-pointer rounded-2xl border border-[var(--app-border)] bg-transparent p-1"
+                    onChange={(event) =>
+                      setSettingsDraft((current) => ({
+                        ...current,
+                        backgroundColor: event.target.value,
+                      }))
+                    }
+                    type="color"
+                    value={settingsDraft.backgroundColor}
+                  />
+                  <span className="text-sm text-[var(--app-muted)]">
+                    {settingsDraft.backgroundColor}
+                  </span>
+                </div>
+              </Field>
+            ) : null}
+          </div>
         </div>
       </Modal>
     </>

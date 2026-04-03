@@ -49,13 +49,66 @@ export const DEFAULT_TEXT_SIZE = {
 
 export const DEFAULT_TEXT_STYLE: Pick<
   BoardTextItem,
-  "fontFamily" | "fontSize" | "textColor" | "tone"
+  "fontFamily" | "fontSize" | "textColor" | "backgroundColor" | "tone"
 > = {
   fontFamily: "\"Sora\", \"Trebuchet MS\", sans-serif",
   fontSize: 32,
   textColor: "#f8fafc",
-  tone: "glass",
+  backgroundColor: "#1d4ed8",
+  tone: "plain",
 };
+
+let textMeasureCanvas: HTMLCanvasElement | null = null;
+
+function measureTextWidth(
+  text: string,
+  fontSize: number,
+  fontFamily: string
+) {
+  if (typeof document === "undefined") {
+    return Math.max(text.length * fontSize * 0.58, fontSize * 0.9);
+  }
+
+  textMeasureCanvas ??= document.createElement("canvas");
+  const context = textMeasureCanvas.getContext("2d");
+
+  if (!context) {
+    return Math.max(text.length * fontSize * 0.58, fontSize * 0.9);
+  }
+
+  context.font = `${fontSize}px ${fontFamily}`;
+
+  return context.measureText(text || " ").width;
+}
+
+export function getBoardTextPlacementSize(
+  item: Pick<BoardTextItem, "content" | "fontFamily" | "fontSize" | "tone">
+) {
+  const lines = (item.content || "").split("\n");
+  const safeLines = lines.length ? lines : [""];
+  const maxContentWidth = item.tone === "plain" ? 720 : 640;
+  const paddingX = item.tone === "plain" ? 8 : 32;
+  const paddingY = item.tone === "plain" ? 6 : 24;
+  const minWidth = item.tone === "plain" ? 96 : 160;
+  const minHeight = item.tone === "plain" ? Math.max(42, item.fontSize + 10) : 72;
+  let visualRows = 0;
+  let widestLine = 0;
+
+  safeLines.forEach((line) => {
+    const lineWidth = measureTextWidth(line || " ", item.fontSize, item.fontFamily);
+    const wrappedRows = Math.max(1, Math.ceil(lineWidth / Math.max(maxContentWidth, 1)));
+
+    visualRows += wrappedRows;
+    widestLine = Math.max(widestLine, Math.min(lineWidth, maxContentWidth));
+  });
+
+  return {
+    width: Math.ceil(Math.max(minWidth, widestLine + paddingX * 2)),
+    height: Math.ceil(
+      Math.max(minHeight, visualRows * item.fontSize * 1.15 + paddingY * 2)
+    ),
+  };
+}
 
 export function ensureEntityCenteredInSpace<T extends BaseEntity>(
   item: T,

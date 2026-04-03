@@ -5,6 +5,10 @@ import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
+import {
+  SpaceObjectFinder,
+  type SpaceObjectFinderItem,
+} from "@/components/ui/space-object-finder";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
 import { useI18n } from "@/data/i18n";
@@ -26,26 +30,32 @@ import type {
   TaskPriority,
   WorkspaceSpaceKey,
 } from "@/types/models";
+import { buildNestedChildIndex, getDescendantGroupIds } from "@/utils/group-tree";
 import {
   filterActive,
   getSpacePlacement,
   nextOrder,
   nowIso,
   setSpacePlacement,
+  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
 import {
-  DEFAULT_TEXT_SIZE,
   DEFAULT_TEXT_STYLE,
   TASK_GROUP_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getBoardTextPlacementSize,
   getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
-import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
+import {
+  createGridPlacement,
+  createViewportCenteredOnPlacement,
+  getPlacementOverlapRatio,
+} from "@/utils/space";
 import { formatDate } from "@/utils/date";
 
 const TASKS_SPACE: WorkspaceSpaceKey = "tasks-board";
@@ -94,6 +104,7 @@ const emptyGroupForm = {
   id: "",
   title: "",
   description: "",
+  parentGroupId: "",
   accent: accentOptions[0],
   cornerRadius: 28,
   collapsed: false,
@@ -126,12 +137,21 @@ export default function TasksPage() {
   );
   const boardTexts = useMemo(
     () =>
-      filterActive(collections.boardTexts).filter((item) => item.space === TASKS_SPACE),
+      filterActive(collections.boardTexts).filter(
+        (item) => item.space === TASKS_SPACE && !item.archivedAt
+      ),
     [collections.boardTexts]
   );
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
     [groups, selectedGroupId]
+  );
+  const selectedChildGroups = useMemo(
+    () =>
+      selectedGroup
+        ? groups.filter((group) => group.parentGroupId === selectedGroup.id)
+        : [],
+    [groups, selectedGroup]
   );
   const selectedGroupTasks = useMemo(
     () =>
@@ -141,30 +161,92 @@ export default function TasksPage() {
     [selectedGroup, tasks]
   );
 
+  const childLayout = useMemo(
+    () =>
+      buildNestedChildIndex([
+        ...groups.map((group) => ({
+          key: `group-${group.id}`,
+          parentId: group.parentGroupId ?? null,
+          order: group.order,
+        })),
+        ...tasks.map((task) => ({
+          key: `task-${task.id}`,
+          parentId: task.groupId ?? null,
+          order: task.order,
+        })),
+        ...boardTexts.map((text) => ({
+          key: `text-${text.id}`,
+          parentId: text.parentGroupId ?? null,
+          order: text.order,
+        })),
+      ]),
+    [boardTexts, groups, tasks]
+  );
+
   const groupPlacements = useMemo(() => {
     const map = new Map<string, ReturnType<typeof createGridPlacement>>();
+    const rootGroupIndexes = new Map(
+      groups
+        .filter((group) => !group.parentGroupId)
+        .map((group, index) => [group.id, index])
+    );
 
-    groups.forEach((group, index) => {
-      map.set(
-        group.id,
-        getSpacePlacement(
-          group,
-          TASKS_SPACE,
-          createGridPlacement(index, {
-            startX: 120,
-            startY: 120,
-            width: GROUP_DEFAULT_SIZE.width,
-            height: GROUP_DEFAULT_SIZE.height,
-            columns: 2,
-            gapX: 48,
-            gapY: 48,
-          })
-        )
-      );
+    const resolvePlacement = (
+      group: TaskGroup,
+      stack = new Set<string>()
+    ): ReturnType<typeof createGridPlacement> => {
+      const cached = map.get(group.id);
+
+      if (cached) {
+        return cached;
+      }
+
+      if (stack.has(group.id)) {
+        return createGridPlacement(rootGroupIndexes.get(group.id) ?? 0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      }
+
+      const nextStack = new Set(stack).add(group.id);
+      const parentGroup = group.parentGroupId
+        ? groups.find((entry) => entry.id === group.parentGroupId) ?? null
+        : null;
+      const siblingIndex = childLayout.indexByKey.get(`group-${group.id}`) ?? 0;
+      const fallbackPlacement =
+        parentGroup
+          ? createContainerPlacement(
+              resolvePlacement(parentGroup, nextStack),
+              siblingIndex,
+              GROUP_DEFAULT_SIZE,
+              TASK_GROUP_LAYOUT
+            ).placement
+          : createGridPlacement(rootGroupIndexes.get(group.id) ?? 0, {
+              startX: 120,
+              startY: 120,
+              width: GROUP_DEFAULT_SIZE.width,
+              height: GROUP_DEFAULT_SIZE.height,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            });
+      const placement = getSpacePlacement(group, TASKS_SPACE, fallbackPlacement);
+
+      map.set(group.id, placement);
+      return placement;
+    };
+
+    groups.forEach((group) => {
+      resolvePlacement(group);
     });
 
     return map;
-  }, [groups]);
+  }, [childLayout.indexByKey, groups]);
 
   const nodes = useMemo<Array<SpaceCanvasNode<TaskBoardData>>>(() => {
     const groupNodes: Array<SpaceCanvasNode<TaskBoardData>> = groups.map((group) => ({
@@ -172,7 +254,7 @@ export default function TasksPage() {
       data: {
         kind: "group",
         group,
-        taskCount: tasks.filter((task) => task.groupId === group.id).length,
+        taskCount: childLayout.countByParentId.get(group.id) ?? 0,
       },
       placement:
         groupPlacements.get(group.id) ??
@@ -193,21 +275,11 @@ export default function TasksPage() {
       zIndex: 5,
     }));
 
-    const groupedTasks = new Map<string | null, TaskItem[]>();
-
-    tasks.forEach((task) => {
-      const bucket = groupedTasks.get(task.groupId) ?? [];
-      bucket.push(task);
-      groupedTasks.set(task.groupId, bucket);
-    });
-
     const taskNodes: Array<SpaceCanvasNode<TaskBoardData>> = tasks.map((task, index) => {
       const parentGroup = task.groupId
         ? groups.find((group) => group.id === task.groupId) ?? null
         : null;
-      const siblingIndex = (groupedTasks.get(task.groupId) ?? []).findIndex(
-        (entry) => entry.id === task.id
-      );
+      const siblingIndex = childLayout.indexByKey.get(`task-${task.id}`) ?? 0;
       const parentPlacement = parentGroup
         ? groupPlacements.get(parentGroup.id) ??
           createGridPlacement(0, {
@@ -250,36 +322,113 @@ export default function TasksPage() {
       };
     });
 
-    const textNodes: Array<SpaceCanvasNode<TaskBoardData>> = boardTexts.map((text, index) => ({
-      id: `text-${text.id}`,
-      data: {
-        kind: "text",
-        text,
-      },
-      placement: getSpacePlacement(
+    const textNodes: Array<SpaceCanvasNode<TaskBoardData>> = boardTexts.map((text, index) => {
+      const textSize = getBoardTextPlacementSize(text);
+      const parentGroup = text.parentGroupId
+        ? groups.find((group) => group.id === text.parentGroupId) ?? null
+        : null;
+      const siblingIndex = childLayout.indexByKey.get(`text-${text.id}`) ?? 0;
+      const basePlacement = getSpacePlacement(
         text,
         TASKS_SPACE,
-        createGridPlacement(index, {
-          startX: 1080,
-          startY: 120,
-          width: DEFAULT_TEXT_SIZE.width,
-          height: DEFAULT_TEXT_SIZE.height,
-          columns: 2,
-          gapX: 28,
-          gapY: 28,
-        })
-      ),
-      resizable: true,
-      resizeMode: "font-size",
-      minSize: {
-        width: 220,
-        height: 120,
-      },
-      zIndex: 60,
-    }));
+        parentGroup
+          ? createContainerPlacement(
+              groupPlacements.get(parentGroup.id) ??
+                createGridPlacement(0, {
+                  startX: 120,
+                  startY: 120,
+                  width: GROUP_DEFAULT_SIZE.width,
+                  height: GROUP_DEFAULT_SIZE.height,
+                  columns: 2,
+                  gapX: 48,
+                  gapY: 48,
+                }),
+              siblingIndex,
+              textSize,
+              TASK_GROUP_LAYOUT
+            ).placement
+          : createGridPlacement(index, {
+              startX: 1080,
+              startY: 120,
+              width: textSize.width,
+              height: textSize.height,
+              columns: 2,
+              gapX: 28,
+              gapY: 28,
+            })
+      );
+
+      return {
+        id: `text-${text.id}`,
+        data: {
+          kind: "text",
+          text,
+        },
+        placement: {
+          ...basePlacement,
+          width: textSize.width,
+          height: textSize.height,
+        },
+        resizable: true,
+        resizeMode: "font-size",
+        minSize: {
+          width: 220,
+          height: 120,
+        },
+        zIndex: 60,
+      };
+    });
 
     return [...groupNodes, ...taskNodes, ...textNodes];
-  }, [boardTexts, groupPlacements, groups, tasks]);
+  }, [boardTexts, childLayout.countByParentId, childLayout.indexByKey, groupPlacements, groups, tasks]);
+
+  const taskPriorityLabels = useMemo(
+    () => ({
+      low: t("priorityLow"),
+      medium: t("priorityMedium"),
+      high: t("priorityHigh"),
+      urgent: t("priorityUrgent"),
+    }),
+    [t]
+  );
+
+  const finderItems = useMemo<Array<SpaceObjectFinderItem>>(
+    () =>
+      nodes.map((node) => {
+        if (node.data.kind === "group") {
+          return {
+            id: node.id,
+            title: node.data.group.title,
+            subtitle: node.data.group.description || t("tasks"),
+            kindLabel: t("objectTypeGroup"),
+            placement: node.placement,
+          };
+        }
+
+        if (node.data.kind === "text") {
+          return {
+            id: node.id,
+            title:
+              node.data.text.content
+                .split("\n")
+                .map((line) => line.trim())
+                .find(Boolean) || t("createText"),
+            subtitle: t("tasks"),
+            kindLabel: t("objectTypeText"),
+            placement: node.placement,
+          };
+        }
+
+        return {
+          id: node.id,
+          title: node.data.task.title,
+          subtitle: node.data.task.description || taskPriorityLabels[node.data.task.priority],
+          kindLabel: t("objectTypeTask"),
+          placement: node.placement,
+        };
+      }),
+    [nodes, t, taskPriorityLabels]
+  );
 
   function openCreateTask(groupId?: string | null) {
     setTaskForm({
@@ -306,34 +455,38 @@ export default function TasksPage() {
     setTaskModalOpen(true);
   }
 
-  function openCreateGroup() {
+  function openCreateGroup(parentGroupId?: string | null) {
     setGroupForm({
       ...emptyGroupForm,
+      parentGroupId: parentGroupId ?? "",
       accent: accentOptions[Math.floor(Math.random() * accentOptions.length)],
     });
     setGroupModalOpen(true);
   }
 
   function openCreateText() {
-    const nextText = ensureEntityCenteredInSpace(
-      upsertEntity<BoardTextItem>(
-        undefined,
+    const draftText = upsertEntity<BoardTextItem>(
+      undefined,
         {
           title: "",
           description: "",
           space: TASKS_SPACE,
           content: "",
-          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+        fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
           fontSize: DEFAULT_TEXT_STYLE.fontSize,
           textColor: DEFAULT_TEXT_STYLE.textColor,
+          backgroundColor: DEFAULT_TEXT_STYLE.backgroundColor,
           tone: DEFAULT_TEXT_STYLE.tone,
+          parentGroupId: null,
           cornerRadius: 0,
         },
         nextOrder(collections.boardTexts)
-      ),
+    );
+    const nextText = ensureEntityCenteredInSpace(
+      draftText,
       TASKS_SPACE,
       viewport,
-      DEFAULT_TEXT_SIZE
+      getBoardTextPlacementSize(draftText)
     );
 
     setSelectedTextId(nextText.id);
@@ -346,6 +499,7 @@ export default function TasksPage() {
       id: group.id,
       title: group.title,
       description: group.description,
+      parentGroupId: group.parentGroupId ?? "",
       accent: group.accent,
       cornerRadius: group.cornerRadius,
       collapsed: group.collapsed,
@@ -398,12 +552,11 @@ export default function TasksPage() {
           gapX: 48,
           gapY: 48,
         });
-      const siblingCount = tasks.filter(
-        (entry) => entry.groupId === targetGroup.id && entry.id !== task.id
-      ).length;
       const { container, placement } = createContainerPlacement(
         targetGroupPlacement,
-        siblingCount,
+        (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+          (key) => key !== `task-${task.id}`
+        ).length,
         TASK_TILE_SIZE,
         TASK_GROUP_LAYOUT
       );
@@ -440,6 +593,7 @@ export default function TasksPage() {
       {
         title: groupForm.title.trim() || t("untitledGroup"),
         description: groupForm.description,
+        parentGroupId: groupForm.parentGroupId || null,
         accent: groupForm.accent,
         cornerRadius: groupForm.cornerRadius,
         collapsed: groupForm.collapsed,
@@ -451,16 +605,51 @@ export default function TasksPage() {
 
     nextGroup = ensureShortcutBoardPlacements(nextGroup, settings, GROUP_DEFAULT_SIZE);
 
-    if (!nextGroup.spacePlacements?.[TASKS_SPACE]) {
-      nextGroup = ensureEntityCenteredInSpace(
-        nextGroup,
-        TASKS_SPACE,
-        viewport,
-        GROUP_DEFAULT_SIZE
-      );
-    }
+    const targetParent = nextGroup.parentGroupId
+      ? groups.find((group) => group.id === nextGroup.parentGroupId) ?? null
+      : null;
 
-    await saveItem("taskGroups", nextGroup);
+    if (targetParent) {
+      const targetPlacement =
+        groupPlacements.get(targetParent.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const { container, placement } = createContainerPlacement(
+        targetPlacement,
+        (childLayout.keysByParentId.get(targetParent.id) ?? []).filter(
+          (key) => key !== `group-${nextGroup.id}`
+        ).length,
+        GROUP_DEFAULT_SIZE,
+        TASK_GROUP_LAYOUT
+      );
+
+      nextGroup = setSpacePlacement(nextGroup, TASKS_SPACE, placement);
+
+      await Promise.all([
+        saveItem("taskGroups", nextGroup),
+        container.width !== targetPlacement.width || container.height !== targetPlacement.height
+          ? saveItem("taskGroups", setSpacePlacement(targetParent, TASKS_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!nextGroup.spacePlacements?.[TASKS_SPACE]) {
+        nextGroup = ensureEntityCenteredInSpace(
+          nextGroup,
+          TASKS_SPACE,
+          viewport,
+          GROUP_DEFAULT_SIZE
+        );
+      }
+
+      await saveItem("taskGroups", nextGroup);
+    }
     setGroupModalOpen(false);
   }
 
@@ -478,7 +667,23 @@ export default function TasksPage() {
       saveMany(
         "tasks",
         collections.tasks.map((task) =>
-          task.groupId === group.id ? { ...task, groupId: null } : task
+          task.groupId === group.id ? { ...task, groupId: group.parentGroupId ?? null } : task
+        )
+      ),
+      saveMany(
+        "boardTexts",
+        collections.boardTexts.map((text) =>
+          text.space === TASKS_SPACE && text.parentGroupId === group.id
+            ? { ...text, parentGroupId: group.parentGroupId ?? null }
+            : text
+        )
+      ),
+      saveMany(
+        "taskGroups",
+        collections.taskGroups.map((entry) =>
+          entry.parentGroupId === group.id
+            ? { ...entry, parentGroupId: group.parentGroupId ?? null }
+            : entry
         )
       ),
       hardDelete("taskGroups", group.id),
@@ -496,17 +701,71 @@ export default function TasksPage() {
       return;
     }
 
-    const deltaX = placement.x - previousPlacement.x;
-    const deltaY = placement.y - previousPlacement.y;
+    const descendantGroupIds = getDescendantGroupIds(groups, group.id);
+    const blockedGroupIds = new Set([group.id, ...descendantGroupIds]);
+    const targetGroup = groups
+      .filter((entry) => !blockedGroupIds.has(entry.id))
+      .map((entry) => ({
+        group: entry,
+        overlap: getPlacementOverlapRatio(
+          placement,
+          groupPlacements.get(entry.id) ??
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: 760,
+              height: 380,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+        ),
+      }))
+      .sort((left, right) => right.overlap - left.overlap)
+      .find((entry) => entry.overlap >= 0.5)?.group;
+
+    let nextPlacement = placement;
+    const changedGroups = new Map<string, TaskGroup>();
+
+    if (targetGroup && targetGroup.id !== group.parentGroupId) {
+      const targetPlacement =
+        groupPlacements.get(targetGroup.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const { container, placement: nestedPlacement } = createContainerPlacement(
+        targetPlacement,
+        (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+          (key) => key !== `group-${group.id}`
+        ).length,
+        GROUP_DEFAULT_SIZE,
+        TASK_GROUP_LAYOUT
+      );
+
+      nextPlacement = nestedPlacement;
+
+      if (container.width !== targetPlacement.width || container.height !== targetPlacement.height) {
+        changedGroups.set(targetGroup.id, setSpacePlacement(targetGroup, TASKS_SPACE, container));
+      }
+    }
+
+    const deltaX = nextPlacement.x - previousPlacement.x;
+    const deltaY = nextPlacement.y - previousPlacement.y;
     const movedTasks = collections.tasks
-      .filter((task) => task.groupId === group.id)
+      .filter((task) => task.groupId === group.id || descendantGroupIds.includes(task.groupId ?? ""))
       .map((task) => {
         const taskPlacement = getSpacePlacement(
           task,
           TASKS_SPACE,
           createGridPlacement(0, {
-            startX: placement.x + 28,
-            startY: placement.y + 84,
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
             width: 308,
             height: 198,
           })
@@ -518,16 +777,84 @@ export default function TasksPage() {
           y: taskPlacement.y + deltaY,
         });
       });
-    const queue: Array<Promise<void>> = [
-      saveItem("taskGroups", setSpacePlacement(group, TASKS_SPACE, placement)),
-    ];
+    const movedTexts = collections.boardTexts
+      .filter(
+        (text) =>
+          text.space === TASKS_SPACE &&
+          (text.parentGroupId === group.id || descendantGroupIds.includes(text.parentGroupId ?? ""))
+      )
+      .map((text) => {
+        const textPlacement = getSpacePlacement(
+          text,
+          TASKS_SPACE,
+          createGridPlacement(0, {
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
+            width: 320,
+            height: 120,
+          })
+        );
 
-    if (deltaX || deltaY) {
-      const untouchedTasks = collections.tasks.filter((task) => task.groupId !== group.id);
-      queue.push(saveMany("tasks", [...untouchedTasks, ...movedTasks]));
-    }
+        return setSpacePlacement(text, TASKS_SPACE, {
+          ...textPlacement,
+          x: textPlacement.x + deltaX,
+          y: textPlacement.y + deltaY,
+        });
+      });
+    const movedGroups = groups
+      .filter((entry) => descendantGroupIds.includes(entry.id))
+      .map((entry) => {
+        const groupPlacement =
+          groupPlacements.get(entry.id) ??
+          createGridPlacement(0, {
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
+          });
 
-    await Promise.all(queue);
+        return setSpacePlacement(entry, TASKS_SPACE, {
+          ...groupPlacement,
+          x: groupPlacement.x + deltaX,
+          y: groupPlacement.y + deltaY,
+        });
+      });
+
+    changedGroups.set(
+      group.id,
+      setSpacePlacement(
+        {
+          ...group,
+          parentGroupId: targetGroup?.id ?? null,
+        },
+        TASKS_SPACE,
+        nextPlacement
+      )
+    );
+    movedGroups.forEach((entry) => changedGroups.set(entry.id, entry));
+
+    await Promise.all([
+      saveMany(
+        "taskGroups",
+        collections.taskGroups.map((entry) => changedGroups.get(entry.id) ?? entry)
+      ),
+      deltaX || deltaY
+        ? saveMany(
+            "tasks",
+            collections.tasks.map(
+              (entry) => movedTasks.find((changed) => changed.id === entry.id) ?? entry
+            )
+          )
+        : Promise.resolve(),
+      deltaX || deltaY
+        ? saveMany(
+            "boardTexts",
+            collections.boardTexts.map(
+              (entry) => movedTexts.find((changed) => changed.id === entry.id) ?? entry
+            )
+          )
+        : Promise.resolve(),
+    ]);
   }
 
   async function handleTaskPlacementCommit(
@@ -567,11 +894,48 @@ export default function TasksPage() {
     );
   }
 
+  async function handleTextPlacementCommit(
+    text: BoardTextItem,
+    placement: ReturnType<typeof createGridPlacement>
+  ) {
+    const targetGroup = groups
+      .map((group) => ({
+        group,
+        overlap: getPlacementOverlapRatio(
+          placement,
+          groupPlacements.get(group.id) ??
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: 760,
+              height: 380,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+        ),
+      }))
+      .sort((left, right) => right.overlap - left.overlap)
+      .find((entry) => entry.overlap >= 0.5);
+
+    await saveItem(
+      "boardTexts",
+      setSpacePlacement(
+        {
+          ...text,
+          parentGroupId: targetGroup?.group.id ?? null,
+        },
+        TASKS_SPACE,
+        placement
+      )
+    );
+  }
+
   return (
     <div className="relative h-full">
       <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
         <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
+          <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
             {t("createGroup")}
           </Button>
         </div>
@@ -604,16 +968,17 @@ export default function TasksPage() {
         nodes={nodes}
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
+            setSelectedTextId(null);
             setSelectedGroupId(node.data.group.id);
             return;
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             return;
           }
 
           if (node.data.kind === "task") {
+            setSelectedTextId(null);
             openEditTask(node.data.task);
           }
         }}
@@ -623,10 +988,27 @@ export default function TasksPage() {
           }
 
           const groupNode = node.data as Extract<TaskBoardData, { kind: "group" }>;
+          const descendantGroupIds = getDescendantGroupIds(groups, groupNode.group.id);
 
-          return tasks
-            .filter((task) => task.groupId === groupNode.group.id)
-            .map((task) => `task-${task.id}`);
+          return [
+            ...groups
+              .filter((group) => descendantGroupIds.includes(group.id))
+              .map((group) => `group-${group.id}`),
+            ...tasks
+              .filter(
+                (task) =>
+                  task.groupId === groupNode.group.id ||
+                  descendantGroupIds.includes(task.groupId ?? "")
+              )
+              .map((task) => `task-${task.id}`),
+            ...boardTexts
+              .filter(
+                (text) =>
+                  text.parentGroupId === groupNode.group.id ||
+                  descendantGroupIds.includes(text.parentGroupId ?? "")
+              )
+              .map((text) => `text-${text.id}`),
+          ];
         }}
         onPlacementCommit={(id, placement) => {
           const node = nodes.find((item) => item.id === id);
@@ -641,8 +1023,7 @@ export default function TasksPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
-            void saveItem("boardTexts", setSpacePlacement(node.data.text, TASKS_SPACE, placement));
+            void handleTextPlacementCommit(node.data.text, placement);
             return;
           }
 
@@ -656,7 +1037,6 @@ export default function TasksPage() {
             return;
           }
 
-          setSelectedTextId(text.id);
           void saveItem("boardTexts", {
             ...text,
             fontSize: getFontSizeFromResize({
@@ -698,12 +1078,39 @@ export default function TasksPage() {
                 active={selectedTextId === textNode.text.id}
                 item={textNode.text}
                 onActivate={() => setSelectedTextId(textNode.text.id)}
+                onDeactivate={() =>
+                  setSelectedTextId((current) =>
+                    current === textNode.text.id ? null : current
+                  )
+                }
                 onSave={(patch) =>
                   void saveItem("boardTexts", {
                     ...textNode.text,
                     ...patch,
                   })
                 }
+                onTogglePin={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      togglePinned(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onToggleFavorite={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      toggleFavorite(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onArchive={() => void saveItem("boardTexts", toggleArchive(textNode.text))}
+                onDelete={() => void hardDelete("boardTexts", textNode.text.id)}
                 previewFontSize={getFontSizeFromResize({
                   currentFontSize: textNode.text.fontSize,
                   origin: node.placement,
@@ -733,6 +1140,13 @@ export default function TasksPage() {
         }}
         size={{ width: 4600, height: 2800 }}
         viewport={viewport}
+      />
+
+      <SpaceObjectFinder
+        items={finderItems}
+        onFocusItem={(item) =>
+          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+        }
       />
 
       <Modal
@@ -928,6 +1342,16 @@ export default function TasksPage() {
             {selectedGroup ? (
               <Button
                 className="gap-2"
+                onClick={() => openCreateGroup(selectedGroup.id)}
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("createGroup")}
+              </Button>
+            ) : null}
+            {selectedGroup ? (
+              <Button
+                className="gap-2"
                 onClick={() => openCreateTask(selectedGroup.id)}
                 variant="secondary"
               >
@@ -995,6 +1419,26 @@ export default function TasksPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            {selectedChildGroups.length ? (
+              <div className="space-y-3">
+                {selectedChildGroups.map((group) => (
+                  <button
+                    className="flex w-full items-start justify-between rounded-[22px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4 text-left transition hover:bg-[var(--card-hover)]"
+                    key={group.id}
+                    onClick={() => setSelectedGroupId(group.id)}
+                    type="button"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-[var(--app-text)]">{group.title}</p>
+                      <p className="mt-1 line-clamp-2 text-sm text-[var(--app-muted)]">
+                        {group.description || t("tasks")}
+                      </p>
+                    </div>
+                    <Badge>{t("objectTypeGroup")}</Badge>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {selectedGroupTasks.length ? (
               <div className="space-y-3">
                 {selectedGroupTasks.map((task) => (

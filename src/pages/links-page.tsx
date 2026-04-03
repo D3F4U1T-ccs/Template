@@ -3,6 +3,10 @@ import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  SpaceObjectFinder,
+  type SpaceObjectFinderItem,
+} from "@/components/ui/space-object-finder";
 import { useI18n } from "@/data/i18n";
 import { Modal } from "@/components/ui/modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
@@ -26,25 +30,31 @@ import type {
   WorkspaceSpaceKey,
 } from "@/types/models";
 import { getFaviconUrl, normalizeUrl } from "@/utils/files";
+import { buildNestedChildIndex, getDescendantGroupIds } from "@/utils/group-tree";
 import {
   filterActive,
   getSpacePlacement,
   nextOrder,
   setSpacePlacement,
+  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
 import {
-  DEFAULT_TEXT_SIZE,
   DEFAULT_TEXT_STYLE,
   LINK_GROUP_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getBoardTextPlacementSize,
   getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
-import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
+import {
+  createGridPlacement,
+  createViewportCenteredOnPlacement,
+  getPlacementOverlapRatio,
+} from "@/utils/space";
 
 type LinkBoardData =
   | {
@@ -92,6 +102,7 @@ const emptyGroupForm = {
   id: "",
   title: "",
   description: "",
+  parentGroupId: "",
   accent: accentOptions[0],
   cornerRadius: 28,
   collapsed: false,
@@ -121,12 +132,21 @@ export default function LinksPage() {
   );
   const boardTexts = useMemo(
     () =>
-      filterActive(collections.boardTexts).filter((item) => item.space === LINKS_SPACE),
+      filterActive(collections.boardTexts).filter(
+        (item) => item.space === LINKS_SPACE && !item.archivedAt
+      ),
     [collections.boardTexts]
   );
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
     [groups, selectedGroupId]
+  );
+  const selectedChildGroups = useMemo(
+    () =>
+      selectedGroup
+        ? groups.filter((group) => group.parentGroupId === selectedGroup.id)
+        : [],
+    [groups, selectedGroup]
   );
   const selectedGroupLinks = useMemo(
     () =>
@@ -136,30 +156,92 @@ export default function LinksPage() {
     [links, selectedGroup]
   );
 
+  const childLayout = useMemo(
+    () =>
+      buildNestedChildIndex([
+        ...groups.map((group) => ({
+          key: `group-${group.id}`,
+          parentId: group.parentGroupId ?? null,
+          order: group.order,
+        })),
+        ...links.map((link) => ({
+          key: `link-${link.id}`,
+          parentId: link.groupId ?? null,
+          order: link.order,
+        })),
+        ...boardTexts.map((text) => ({
+          key: `text-${text.id}`,
+          parentId: text.parentGroupId ?? null,
+          order: text.order,
+        })),
+      ]),
+    [boardTexts, groups, links]
+  );
+
   const groupPlacements = useMemo(() => {
     const map = new Map<string, ReturnType<typeof createGridPlacement>>();
+    const rootGroupIndexes = new Map(
+      groups
+        .filter((group) => !group.parentGroupId)
+        .map((group, index) => [group.id, index])
+    );
 
-    groups.forEach((group, index) => {
-      map.set(
-        group.id,
-        getSpacePlacement(
-          group,
-          LINKS_SPACE,
-          createGridPlacement(index, {
-            startX: 120,
-            startY: 120,
-            width: GROUP_DEFAULT_SIZE.width,
-            height: GROUP_DEFAULT_SIZE.height,
-            columns: 2,
-            gapX: 48,
-            gapY: 48,
-          })
-        )
-      );
+    const resolvePlacement = (
+      group: LinkGroup,
+      stack = new Set<string>()
+    ): ReturnType<typeof createGridPlacement> => {
+      const cached = map.get(group.id);
+
+      if (cached) {
+        return cached;
+      }
+
+      if (stack.has(group.id)) {
+        return createGridPlacement(rootGroupIndexes.get(group.id) ?? 0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      }
+
+      const nextStack = new Set(stack).add(group.id);
+      const parentGroup = group.parentGroupId
+        ? groups.find((entry) => entry.id === group.parentGroupId) ?? null
+        : null;
+      const siblingIndex = childLayout.indexByKey.get(`group-${group.id}`) ?? 0;
+      const fallbackPlacement =
+        parentGroup
+          ? createContainerPlacement(
+              resolvePlacement(parentGroup, nextStack),
+              siblingIndex,
+              GROUP_DEFAULT_SIZE,
+              LINK_GROUP_LAYOUT
+            ).placement
+          : createGridPlacement(rootGroupIndexes.get(group.id) ?? 0, {
+              startX: 120,
+              startY: 120,
+              width: GROUP_DEFAULT_SIZE.width,
+              height: GROUP_DEFAULT_SIZE.height,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            });
+      const placement = getSpacePlacement(group, LINKS_SPACE, fallbackPlacement);
+
+      map.set(group.id, placement);
+      return placement;
+    };
+
+    groups.forEach((group) => {
+      resolvePlacement(group);
     });
 
     return map;
-  }, [groups]);
+  }, [childLayout.indexByKey, groups]);
 
   const nodes = useMemo<Array<SpaceCanvasNode<LinkBoardData>>>(() => {
     const groupNodes: Array<SpaceCanvasNode<LinkBoardData>> = groups.map((group) => ({
@@ -167,7 +249,7 @@ export default function LinksPage() {
       data: {
         kind: "group",
         group,
-        linkCount: links.filter((link) => link.groupId === group.id).length,
+        linkCount: childLayout.countByParentId.get(group.id) ?? 0,
       },
       placement:
         groupPlacements.get(group.id) ??
@@ -188,21 +270,11 @@ export default function LinksPage() {
       zIndex: 5,
     }));
 
-    const groupedLinks = new Map<string | null, LinkItem[]>();
-
-    links.forEach((link) => {
-      const bucket = groupedLinks.get(link.groupId) ?? [];
-      bucket.push(link);
-      groupedLinks.set(link.groupId, bucket);
-    });
-
     const linkNodes: Array<SpaceCanvasNode<LinkBoardData>> = links.map((link, index) => {
       const parentGroup = link.groupId
         ? groups.find((group) => group.id === link.groupId) ?? null
         : null;
-      const siblingIndex = (groupedLinks.get(link.groupId) ?? []).findIndex(
-        (entry) => entry.id === link.id
-      );
+      const siblingIndex = childLayout.indexByKey.get(`link-${link.id}`) ?? 0;
       const parentPlacement = parentGroup
         ? groupPlacements.get(parentGroup.id) ??
           createGridPlacement(0, {
@@ -245,36 +317,103 @@ export default function LinksPage() {
       };
     });
 
-    const textNodes: Array<SpaceCanvasNode<LinkBoardData>> = boardTexts.map((text, index) => ({
-      id: `text-${text.id}`,
-      data: {
-        kind: "text",
-        text,
-      },
-      placement: getSpacePlacement(
+    const textNodes: Array<SpaceCanvasNode<LinkBoardData>> = boardTexts.map((text, index) => {
+      const textSize = getBoardTextPlacementSize(text);
+      const parentGroup = text.parentGroupId
+        ? groups.find((group) => group.id === text.parentGroupId) ?? null
+        : null;
+      const siblingIndex = childLayout.indexByKey.get(`text-${text.id}`) ?? 0;
+      const basePlacement = getSpacePlacement(
         text,
         LINKS_SPACE,
-        createGridPlacement(index, {
-          startX: 1040,
-          startY: 120,
-          width: DEFAULT_TEXT_SIZE.width,
-          height: DEFAULT_TEXT_SIZE.height,
-          columns: 2,
-          gapX: 28,
-          gapY: 28,
-        })
-      ),
-      resizable: true,
-      resizeMode: "font-size",
-      minSize: {
-        width: 220,
-        height: 120,
-      },
-      zIndex: 60,
-    }));
+        parentGroup
+          ? createContainerPlacement(
+              groupPlacements.get(parentGroup.id) ??
+                createGridPlacement(0, {
+                  startX: 120,
+                  startY: 120,
+                  width: GROUP_DEFAULT_SIZE.width,
+                  height: GROUP_DEFAULT_SIZE.height,
+                  columns: 2,
+                  gapX: 48,
+                  gapY: 48,
+                }),
+              siblingIndex,
+              textSize,
+              LINK_GROUP_LAYOUT
+            ).placement
+          : createGridPlacement(index, {
+              startX: 1040,
+              startY: 120,
+              width: textSize.width,
+              height: textSize.height,
+              columns: 2,
+              gapX: 28,
+              gapY: 28,
+            })
+      );
+
+      return {
+        id: `text-${text.id}`,
+        data: {
+          kind: "text",
+          text,
+        },
+        placement: {
+          ...basePlacement,
+          width: textSize.width,
+          height: textSize.height,
+        },
+        resizable: true,
+        resizeMode: "font-size",
+        minSize: {
+          width: 220,
+          height: 120,
+        },
+        zIndex: 60,
+      };
+    });
 
     return [...groupNodes, ...linkNodes, ...textNodes];
-  }, [boardTexts, groupPlacements, groups, links]);
+  }, [boardTexts, childLayout.countByParentId, childLayout.indexByKey, groupPlacements, groups, links]);
+
+  const finderItems = useMemo<Array<SpaceObjectFinderItem>>(
+    () =>
+      nodes.map((node) => {
+        if (node.data.kind === "group") {
+          return {
+            id: node.id,
+            title: node.data.group.title,
+            subtitle: node.data.group.description || t("links"),
+            kindLabel: t("objectTypeGroup"),
+            placement: node.placement,
+          };
+        }
+
+        if (node.data.kind === "text") {
+          return {
+            id: node.id,
+            title:
+              node.data.text.content
+                .split("\n")
+                .map((line) => line.trim())
+                .find(Boolean) || t("createText"),
+            subtitle: t("links"),
+            kindLabel: t("objectTypeText"),
+            placement: node.placement,
+          };
+        }
+
+        return {
+          id: node.id,
+          title: node.data.link.title,
+          subtitle: node.data.link.statusText || node.data.link.description || node.data.link.url,
+          kindLabel: t("objectTypeLink"),
+          placement: node.placement,
+        };
+      }),
+    [nodes, t]
+  );
 
   function openCreateLink(groupId?: string | null) {
     setLinkForm({
@@ -301,34 +440,38 @@ export default function LinksPage() {
     setLinkModalOpen(true);
   }
 
-  function openCreateGroup() {
+  function openCreateGroup(parentGroupId?: string | null) {
     setGroupForm({
       ...emptyGroupForm,
+      parentGroupId: parentGroupId ?? "",
       accent: accentOptions[Math.floor(Math.random() * accentOptions.length)],
     });
     setGroupModalOpen(true);
   }
 
   function openCreateText() {
-    const nextText = ensureEntityCenteredInSpace(
-      upsertEntity<BoardTextItem>(
-        undefined,
+    const draftText = upsertEntity<BoardTextItem>(
+      undefined,
         {
           title: "",
           description: "",
           space: LINKS_SPACE,
           content: "",
-          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+        fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
           fontSize: DEFAULT_TEXT_STYLE.fontSize,
           textColor: DEFAULT_TEXT_STYLE.textColor,
+          backgroundColor: DEFAULT_TEXT_STYLE.backgroundColor,
           tone: DEFAULT_TEXT_STYLE.tone,
+          parentGroupId: null,
           cornerRadius: 0,
         },
         nextOrder(collections.boardTexts)
-      ),
+    );
+    const nextText = ensureEntityCenteredInSpace(
+      draftText,
       LINKS_SPACE,
       viewport,
-      DEFAULT_TEXT_SIZE
+      getBoardTextPlacementSize(draftText)
     );
 
     setSelectedTextId(nextText.id);
@@ -341,6 +484,7 @@ export default function LinksPage() {
       id: group.id,
       title: group.title,
       description: group.description,
+      parentGroupId: group.parentGroupId ?? "",
       accent: group.accent,
       cornerRadius: group.cornerRadius,
       collapsed: group.collapsed,
@@ -389,12 +533,11 @@ export default function LinksPage() {
           gapX: 48,
           gapY: 48,
         });
-      const siblingCount = links.filter(
-        (link) => link.groupId === targetGroup.id && link.id !== nextLink.id
-      ).length;
       const { container, placement } = createContainerPlacement(
         targetGroupPlacement,
-        siblingCount,
+        (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+          (key) => key !== `link-${nextLink.id}`
+        ).length,
         LINK_TILE_SIZE,
         LINK_GROUP_LAYOUT
       );
@@ -436,6 +579,7 @@ export default function LinksPage() {
       {
         title: groupForm.title.trim() || t("untitledGroup"),
         description: groupForm.description,
+        parentGroupId: groupForm.parentGroupId || null,
         accent: groupForm.accent,
         cornerRadius: groupForm.cornerRadius,
         collapsed: groupForm.collapsed,
@@ -447,16 +591,51 @@ export default function LinksPage() {
 
     nextGroup = ensureShortcutBoardPlacements(nextGroup, settings, GROUP_DEFAULT_SIZE);
 
-    if (!nextGroup.spacePlacements?.[LINKS_SPACE]) {
-      nextGroup = ensureEntityCenteredInSpace(
-        nextGroup,
-        LINKS_SPACE,
-        viewport,
-        GROUP_DEFAULT_SIZE
-      );
-    }
+    const targetParent = nextGroup.parentGroupId
+      ? groups.find((group) => group.id === nextGroup.parentGroupId) ?? null
+      : null;
 
-    await saveItem("linkGroups", nextGroup);
+    if (targetParent) {
+      const targetPlacement =
+        groupPlacements.get(targetParent.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const { container, placement } = createContainerPlacement(
+        targetPlacement,
+        (childLayout.keysByParentId.get(targetParent.id) ?? []).filter(
+          (key) => key !== `group-${nextGroup.id}`
+        ).length,
+        GROUP_DEFAULT_SIZE,
+        LINK_GROUP_LAYOUT
+      );
+
+      nextGroup = setSpacePlacement(nextGroup, LINKS_SPACE, placement);
+
+      await Promise.all([
+        saveItem("linkGroups", nextGroup),
+        container.width !== targetPlacement.width || container.height !== targetPlacement.height
+          ? saveItem("linkGroups", setSpacePlacement(targetParent, LINKS_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!nextGroup.spacePlacements?.[LINKS_SPACE]) {
+        nextGroup = ensureEntityCenteredInSpace(
+          nextGroup,
+          LINKS_SPACE,
+          viewport,
+          GROUP_DEFAULT_SIZE
+        );
+      }
+
+      await saveItem("linkGroups", nextGroup);
+    }
     setGroupModalOpen(false);
     pushToast({
       title: current ? t("edit") : t("createGroup"),
@@ -481,7 +660,23 @@ export default function LinksPage() {
       saveMany(
         "links",
         collections.links.map((link) =>
-          link.groupId === group.id ? { ...link, groupId: null } : link
+          link.groupId === group.id ? { ...link, groupId: group.parentGroupId ?? null } : link
+        )
+      ),
+      saveMany(
+        "boardTexts",
+        collections.boardTexts.map((text) =>
+          text.space === LINKS_SPACE && text.parentGroupId === group.id
+            ? { ...text, parentGroupId: group.parentGroupId ?? null }
+            : text
+        )
+      ),
+      saveMany(
+        "linkGroups",
+        collections.linkGroups.map((entry) =>
+          entry.parentGroupId === group.id
+            ? { ...entry, parentGroupId: group.parentGroupId ?? null }
+            : entry
         )
       ),
       hardDelete("linkGroups", group.id),
@@ -499,17 +694,71 @@ export default function LinksPage() {
       return;
     }
 
-    const deltaX = placement.x - previousPlacement.x;
-    const deltaY = placement.y - previousPlacement.y;
+    const descendantGroupIds = getDescendantGroupIds(groups, group.id);
+    const blockedGroupIds = new Set([group.id, ...descendantGroupIds]);
+    const targetGroup = groups
+      .filter((entry) => !blockedGroupIds.has(entry.id))
+      .map((entry) => ({
+        group: entry,
+        overlap: getPlacementOverlapRatio(
+          placement,
+          groupPlacements.get(entry.id) ??
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: 760,
+              height: 380,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+        ),
+      }))
+      .sort((left, right) => right.overlap - left.overlap)
+      .find((entry) => entry.overlap >= 0.5)?.group;
+
+    let nextPlacement = placement;
+    const changedGroups = new Map<string, LinkGroup>();
+
+    if (targetGroup && targetGroup.id !== group.parentGroupId) {
+      const targetPlacement =
+        groupPlacements.get(targetGroup.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const { container, placement: nestedPlacement } = createContainerPlacement(
+        targetPlacement,
+        (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+          (key) => key !== `group-${group.id}`
+        ).length,
+        GROUP_DEFAULT_SIZE,
+        LINK_GROUP_LAYOUT
+      );
+
+      nextPlacement = nestedPlacement;
+
+      if (container.width !== targetPlacement.width || container.height !== targetPlacement.height) {
+        changedGroups.set(targetGroup.id, setSpacePlacement(targetGroup, LINKS_SPACE, container));
+      }
+    }
+
+    const deltaX = nextPlacement.x - previousPlacement.x;
+    const deltaY = nextPlacement.y - previousPlacement.y;
     const movedLinks = collections.links
-      .filter((link) => link.groupId === group.id)
+      .filter((link) => link.groupId === group.id || descendantGroupIds.includes(link.groupId ?? ""))
       .map((link) => {
         const linkPlacement = getSpacePlacement(
           link,
           LINKS_SPACE,
           createGridPlacement(0, {
-            startX: placement.x + 28,
-            startY: placement.y + 84,
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
             width: 208,
             height: 208,
           })
@@ -521,16 +770,84 @@ export default function LinksPage() {
           y: linkPlacement.y + deltaY,
         });
       });
-    const tasks: Array<Promise<void>> = [
-      saveItem("linkGroups", setSpacePlacement(group, LINKS_SPACE, placement)),
-    ];
+    const movedTexts = collections.boardTexts
+      .filter(
+        (text) =>
+          text.space === LINKS_SPACE &&
+          (text.parentGroupId === group.id || descendantGroupIds.includes(text.parentGroupId ?? ""))
+      )
+      .map((text) => {
+        const textPlacement = getSpacePlacement(
+          text,
+          LINKS_SPACE,
+          createGridPlacement(0, {
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
+            width: 320,
+            height: 120,
+          })
+        );
 
-    if (deltaX || deltaY) {
-      const untouchedLinks = collections.links.filter((link) => link.groupId !== group.id);
-      tasks.push(saveMany("links", [...untouchedLinks, ...movedLinks]));
-    }
+        return setSpacePlacement(text, LINKS_SPACE, {
+          ...textPlacement,
+          x: textPlacement.x + deltaX,
+          y: textPlacement.y + deltaY,
+        });
+      });
+    const movedGroups = groups
+      .filter((entry) => descendantGroupIds.includes(entry.id))
+      .map((entry) => {
+        const groupPlacement =
+          groupPlacements.get(entry.id) ??
+          createGridPlacement(0, {
+            startX: nextPlacement.x + 28,
+            startY: nextPlacement.y + 84,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
+          });
 
-    await Promise.all(tasks);
+        return setSpacePlacement(entry, LINKS_SPACE, {
+          ...groupPlacement,
+          x: groupPlacement.x + deltaX,
+          y: groupPlacement.y + deltaY,
+        });
+      });
+
+    changedGroups.set(
+      group.id,
+      setSpacePlacement(
+        {
+          ...group,
+          parentGroupId: targetGroup?.id ?? null,
+        },
+        LINKS_SPACE,
+        nextPlacement
+      )
+    );
+    movedGroups.forEach((entry) => changedGroups.set(entry.id, entry));
+
+    await Promise.all([
+      saveMany(
+        "linkGroups",
+        collections.linkGroups.map((entry) => changedGroups.get(entry.id) ?? entry)
+      ),
+      deltaX || deltaY
+        ? saveMany(
+            "links",
+            collections.links.map(
+              (entry) => movedLinks.find((changed) => changed.id === entry.id) ?? entry
+            )
+          )
+        : Promise.resolve(),
+      deltaX || deltaY
+        ? saveMany(
+            "boardTexts",
+            collections.boardTexts.map(
+              (entry) => movedTexts.find((changed) => changed.id === entry.id) ?? entry
+            )
+          )
+        : Promise.resolve(),
+    ]);
   }
 
   async function handleLinkPlacementCommit(
@@ -570,11 +887,48 @@ export default function LinksPage() {
     );
   }
 
+  async function handleTextPlacementCommit(
+    text: BoardTextItem,
+    placement: ReturnType<typeof createGridPlacement>
+  ) {
+    const targetGroup = groups
+      .map((group) => ({
+        group,
+        overlap: getPlacementOverlapRatio(
+          placement,
+          groupPlacements.get(group.id) ??
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: 760,
+              height: 380,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+        ),
+      }))
+      .sort((left, right) => right.overlap - left.overlap)
+      .find((entry) => entry.overlap >= 0.5);
+
+    await saveItem(
+      "boardTexts",
+      setSpacePlacement(
+        {
+          ...text,
+          parentGroupId: targetGroup?.group.id ?? null,
+        },
+        LINKS_SPACE,
+        placement
+      )
+    );
+  }
+
   return (
     <div className="relative h-full">
       <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
         <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
+          <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
             {t("createGroup")}
           </Button>
         </div>
@@ -607,16 +961,17 @@ export default function LinksPage() {
         nodes={nodes}
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
+            setSelectedTextId(null);
             setSelectedGroupId(node.data.group.id);
             return;
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
             return;
           }
 
           if (node.data.kind === "link") {
+            setSelectedTextId(null);
             window.open(normalizeUrl(node.data.link.url), "_blank", "noopener,noreferrer");
           }
         }}
@@ -626,10 +981,27 @@ export default function LinksPage() {
           }
 
           const groupNode = node.data as Extract<LinkBoardData, { kind: "group" }>;
+          const descendantGroupIds = getDescendantGroupIds(groups, groupNode.group.id);
 
-          return links
-            .filter((link) => link.groupId === groupNode.group.id)
-            .map((link) => `link-${link.id}`);
+          return [
+            ...groups
+              .filter((group) => descendantGroupIds.includes(group.id))
+              .map((group) => `group-${group.id}`),
+            ...links
+              .filter(
+                (link) =>
+                  link.groupId === groupNode.group.id ||
+                  descendantGroupIds.includes(link.groupId ?? "")
+              )
+              .map((link) => `link-${link.id}`),
+            ...boardTexts
+              .filter(
+                (text) =>
+                  text.parentGroupId === groupNode.group.id ||
+                  descendantGroupIds.includes(text.parentGroupId ?? "")
+              )
+              .map((text) => `text-${text.id}`),
+          ];
         }}
         onPlacementCommit={(nodeId, placement) => {
           const node = nodes.find((item) => item.id === nodeId);
@@ -644,8 +1016,7 @@ export default function LinksPage() {
           }
 
           if (node.data.kind === "text") {
-            setSelectedTextId(node.data.text.id);
-            void saveItem("boardTexts", setSpacePlacement(node.data.text, LINKS_SPACE, placement));
+            void handleTextPlacementCommit(node.data.text, placement);
             return;
           }
 
@@ -659,7 +1030,6 @@ export default function LinksPage() {
             return;
           }
 
-          setSelectedTextId(text.id);
           void saveItem("boardTexts", {
             ...text,
             fontSize: getFontSizeFromResize({
@@ -696,12 +1066,39 @@ export default function LinksPage() {
                 active={selectedTextId === textNode.text.id}
                 item={textNode.text}
                 onActivate={() => setSelectedTextId(textNode.text.id)}
+                onDeactivate={() =>
+                  setSelectedTextId((current) =>
+                    current === textNode.text.id ? null : current
+                  )
+                }
                 onSave={(patch) =>
                   void saveItem("boardTexts", {
                     ...textNode.text,
                     ...patch,
                   })
                 }
+                onTogglePin={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      togglePinned(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onToggleFavorite={() =>
+                  void saveItem(
+                    "boardTexts",
+                    ensureShortcutBoardPlacements(
+                      toggleFavorite(textNode.text),
+                      settings,
+                      getBoardTextPlacementSize(textNode.text)
+                    )
+                  )
+                }
+                onArchive={() => void saveItem("boardTexts", toggleArchive(textNode.text))}
+                onDelete={() => void hardDelete("boardTexts", textNode.text.id)}
                 previewFontSize={getFontSizeFromResize({
                   currentFontSize: textNode.text.fontSize,
                   origin: node.placement,
@@ -725,6 +1122,13 @@ export default function LinksPage() {
         }}
         size={{ width: 4600, height: 2800 }}
         viewport={viewport}
+      />
+
+      <SpaceObjectFinder
+        items={finderItems}
+        onFocusItem={(item) =>
+          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+        }
       />
 
       <Modal
@@ -887,6 +1291,16 @@ export default function LinksPage() {
             {selectedGroup ? (
               <Button
                 className="gap-2"
+                onClick={() => openCreateGroup(selectedGroup.id)}
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("createGroup")}
+              </Button>
+            ) : null}
+            {selectedGroup ? (
+              <Button
+                className="gap-2"
                 onClick={() => openCreateLink(selectedGroup.id)}
                 variant="secondary"
               >
@@ -936,6 +1350,26 @@ export default function LinksPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            {selectedChildGroups.length ? (
+              <div className="space-y-3">
+                {selectedChildGroups.map((group) => (
+                  <button
+                    className="flex w-full items-center justify-between rounded-[22px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4 text-left transition hover:bg-[var(--card-hover)]"
+                    key={group.id}
+                    onClick={() => setSelectedGroupId(group.id)}
+                    type="button"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-[var(--app-text)]">{group.title}</p>
+                      <p className="truncate text-sm text-[var(--app-muted)]">
+                        {group.description || t("links")}
+                      </p>
+                    </div>
+                    <Badge>{t("objectTypeGroup")}</Badge>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {selectedGroupLinks.length ? (
               <div className="space-y-3">
                 {selectedGroupLinks.map((link) => (
