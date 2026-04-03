@@ -108,6 +108,14 @@ export const accentOptions = [
   "from-orange-500/30 to-amber-500/10",
   "from-rose-500/30 to-pink-500/10",
   "from-violet-500/30 to-fuchsia-500/10",
+  "from-sky-500/30 to-indigo-500/10",
+  "from-lime-500/30 to-emerald-500/10",
+  "from-red-500/30 to-orange-500/10",
+  "from-fuchsia-500/30 to-rose-500/10",
+  "from-amber-500/30 to-yellow-500/10",
+  "from-slate-500/35 to-zinc-900/20",
+  "from-cyan-400/30 via-blue-500/15 to-violet-500/10",
+  "from-emerald-400/30 via-teal-500/12 to-cyan-500/10",
 ];
 
 export const boardTextFontOptions = [

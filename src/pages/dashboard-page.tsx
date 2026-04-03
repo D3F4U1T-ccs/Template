@@ -4,10 +4,6 @@ import { MoreHorizontal } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
-import {
-  BoardTextEditorModal,
-  type BoardTextFormState,
-} from "@/components/ui/board-text-editor-modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
@@ -44,6 +40,7 @@ import {
   LINK_GROUP_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
@@ -96,6 +93,14 @@ const DASHBOARD_ITEM_SIZE = {
   width: 228,
   height: 228,
 };
+const DASHBOARD_PINNED_GROUP_SIZE = {
+  width: 760,
+  height: 380,
+};
+const DASHBOARD_PINNED_LIST_SIZE = {
+  width: 740,
+  height: 420,
+};
 const DASHBOARD_GROUP_SIZE = {
   width: 780,
   height: 400,
@@ -108,16 +113,6 @@ const emptyGroupForm = {
   accent: accentOptions[0],
   coverUrl: "",
   cornerRadius: 28,
-};
-
-const emptyTextForm: BoardTextFormState = {
-  id: "",
-  content: "",
-  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
-  fontSize: DEFAULT_TEXT_STYLE.fontSize,
-  textColor: DEFAULT_TEXT_STYLE.textColor,
-  tone: DEFAULT_TEXT_STYLE.tone,
-  cornerRadius: 26,
 };
 
 function buildPinnedItems(
@@ -219,16 +214,40 @@ function buildPinnedItems(
   ] satisfies DashboardPinnedItem[];
 }
 
+function isPinnedFrameItem(item: DashboardPinnedItem) {
+  return (
+    item.collectionName === "linkGroups" ||
+    item.collectionName === "taskGroups" ||
+    item.collectionName === "noteGroups" ||
+    item.collectionName === "lists"
+  );
+}
+
+function getDashboardPinnedItemSize(item: DashboardPinnedItem) {
+  if (
+    item.collectionName === "linkGroups" ||
+    item.collectionName === "taskGroups" ||
+    item.collectionName === "noteGroups"
+  ) {
+    return DASHBOARD_PINNED_GROUP_SIZE;
+  }
+
+  if (item.collectionName === "lists") {
+    return DASHBOARD_PINNED_LIST_SIZE;
+  }
+
+  return DASHBOARD_ITEM_SIZE;
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { collections, hardDelete, saveItem, saveMany, settings } = useAppData();
   const { viewport, setViewport } = useSpaceViewport(DASHBOARD_SPACE);
   const { t } = useI18n();
   const [groupModalOpen, setGroupModalOpen] = useState(false);
-  const [textModalOpen, setTextModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
-  const [textForm, setTextForm] = useState(emptyTextForm);
 
   const groups = useMemo(
     () => filterActive(collections.dashboardGroups).filter((item) => !item.archivedAt),
@@ -307,6 +326,7 @@ export default function DashboardPage() {
     }));
 
     const itemNodes: Array<SpaceCanvasNode<DashboardNodeData>> = pinnedItems.map((item, index) => {
+      const itemSize = getDashboardPinnedItemSize(item);
       const parentGroup = item.entity.dashboardGroupId
         ? groups.find((group) => group.id === item.entity.dashboardGroupId) ?? null
         : null;
@@ -330,15 +350,15 @@ export default function DashboardPage() {
         ? createContainerPlacement(
             parentPlacement,
             siblingIndex,
-            DASHBOARD_ITEM_SIZE,
+            itemSize,
             LINK_GROUP_LAYOUT
           ).placement
         : createGridPlacement(index, {
-            startX: 1840,
+            startX: isPinnedFrameItem(item) ? 1280 : 1840,
             startY: 140,
-            width: DASHBOARD_ITEM_SIZE.width,
-            height: DASHBOARD_ITEM_SIZE.height,
-            columns: 5,
+            width: itemSize.width,
+            height: itemSize.height,
+            columns: isPinnedFrameItem(item) ? 2 : 5,
             gapX: 28,
             gapY: 28,
           });
@@ -373,11 +393,12 @@ export default function DashboardPage() {
           gapY: 28,
         }),
       resizable: true,
+      resizeMode: "font-size",
       minSize: {
         width: 220,
         height: 120,
       },
-      zIndex: 24,
+      zIndex: 60,
     }));
 
     return [...groupNodes, ...itemNodes, ...textNodes];
@@ -413,21 +434,29 @@ export default function DashboardPage() {
   }
 
   function openCreateText() {
-    setTextForm(emptyTextForm);
-    setTextModalOpen(true);
-  }
+    const nextText = ensureEntityCenteredInSpace(
+      upsertEntity<BoardTextItem>(
+        undefined,
+        {
+          title: "",
+          description: "",
+          space: DASHBOARD_SPACE,
+          content: "",
+          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+          fontSize: DEFAULT_TEXT_STYLE.fontSize,
+          textColor: DEFAULT_TEXT_STYLE.textColor,
+          tone: DEFAULT_TEXT_STYLE.tone,
+          cornerRadius: 0,
+        },
+        nextOrder(collections.boardTexts)
+      ),
+      DASHBOARD_SPACE,
+      viewport,
+      DEFAULT_TEXT_SIZE
+    );
 
-  function openEditText(text: BoardTextItem) {
-    setTextForm({
-      id: text.id,
-      content: text.content,
-      fontFamily: text.fontFamily,
-      fontSize: text.fontSize,
-      textColor: text.textColor,
-      tone: text.tone,
-      cornerRadius: text.cornerRadius,
-    });
-    setTextModalOpen(true);
+    setSelectedTextId(nextText.id);
+    void saveItem("boardTexts", nextText);
   }
 
   async function saveGroupCard() {
@@ -455,37 +484,6 @@ export default function DashboardPage() {
 
     await saveItem("dashboardGroups", nextGroup);
     setGroupModalOpen(false);
-  }
-
-  async function saveTextCard() {
-    const current = collections.boardTexts.find((item) => item.id === textForm.id);
-    let nextText = upsertEntity<BoardTextItem>(
-      current,
-      {
-        title: "",
-        description: "",
-        space: DASHBOARD_SPACE,
-        content: textForm.content,
-        fontFamily: textForm.fontFamily,
-        fontSize: textForm.fontSize,
-        textColor: textForm.textColor,
-        tone: textForm.tone,
-        cornerRadius: textForm.cornerRadius,
-      },
-      current?.order ?? nextOrder(collections.boardTexts)
-    );
-
-    if (!nextText.spacePlacements?.[DASHBOARD_SPACE]) {
-      nextText = ensureEntityCenteredInSpace(
-        nextText,
-        DASHBOARD_SPACE,
-        viewport,
-        DEFAULT_TEXT_SIZE
-      );
-    }
-
-    await saveItem("boardTexts", nextText);
-    setTextModalOpen(false);
   }
 
   async function deleteGroup(group: DashboardGroup) {
@@ -540,9 +538,10 @@ export default function DashboardPage() {
         return;
       }
 
+      const itemSize = getDashboardPinnedItemSize(item);
       const currentPlacement =
         item.entity.spacePlacements?.[DASHBOARD_SPACE] ??
-        createContainerPlacement(previousPlacement, 0, DASHBOARD_ITEM_SIZE, LINK_GROUP_LAYOUT)
+        createContainerPlacement(previousPlacement, 0, itemSize, LINK_GROUP_LAYOUT)
           .placement;
       const bucket = changedByCollection.get(item.collectionName) ?? [];
 
@@ -628,15 +627,17 @@ export default function DashboardPage() {
         nodes={nodes}
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
+            setSelectedTextId(null);
             setSelectedGroupId(node.data.group.id);
             return;
           }
 
           if (node.data.kind === "text") {
-            openEditText(node.data.text);
+            setSelectedTextId(node.data.text.id);
             return;
           }
 
+          setSelectedTextId(null);
           navigate(node.data.item.route);
         }}
         getLinkedNodeIds={(node) => {
@@ -663,6 +664,7 @@ export default function DashboardPage() {
           }
 
           if (node.data.kind === "text") {
+            setSelectedTextId(node.data.text.id);
             void saveItem("boardTexts", setSpacePlacement(node.data.text, DASHBOARD_SPACE, placement));
             return;
           }
@@ -670,6 +672,24 @@ export default function DashboardPage() {
           void handlePinnedPlacementCommit(node.data.item, placement);
         }}
         onViewportChange={setViewport}
+        onFontResizeCommit={({ id, origin, preview }) => {
+          const text = boardTexts.find((entry) => `text-${entry.id}` === id);
+
+          if (!text) {
+            return;
+          }
+
+          setSelectedTextId(text.id);
+          void saveItem("boardTexts", {
+            ...text,
+            fontSize: getFontSizeFromResize({
+              currentFontSize: text.fontSize,
+              origin,
+              preview,
+              max: 160,
+            }),
+          });
+        }}
         renderNode={(node, options) => {
           if (node.data.kind === "group") {
             const groupNode = node.data;
@@ -717,84 +737,88 @@ export default function DashboardPage() {
             return (
               <BoardTextCard
                 className="cursor-grab active:cursor-grabbing"
+                active={selectedTextId === textNode.text.id}
                 item={textNode.text}
-                menu={
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        data-space-no-drag="true"
-                        onClick={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        size="icon"
-                        variant="ghost"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
-                        {t("editText")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
-                      >
-                        {t("delete")}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                onActivate={() => setSelectedTextId(textNode.text.id)}
+                onSave={(patch) =>
+                  void saveItem("boardTexts", {
+                    ...textNode.text,
+                    ...patch,
+                  })
                 }
+                previewFontSize={getFontSizeFromResize({
+                  currentFontSize: textNode.text.fontSize,
+                  origin: node.placement,
+                  preview: options.previewPlacement,
+                  max: 160,
+                })}
               />
             );
           }
 
           const item = node.data.item;
+          const itemMenu = (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  data-space-no-drag="true"
+                  onClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <MoreHorizontal
+                    className={isPinnedFrameItem(item) ? "h-4 w-4 text-white" : "h-4 w-4"}
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => navigate(item.route)}>
+                  {t("open")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() =>
+                    void saveItem(item.collectionName, togglePinned(item.entity) as never)
+                  }
+                >
+                  {t("unpin")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() =>
+                    void saveItem(
+                      item.collectionName,
+                      ensureShortcutBoardPlacements(
+                        toggleFavorite(item.entity),
+                        settings,
+                        getDashboardPinnedItemSize(item)
+                      ) as never
+                    )
+                  }
+                >
+                  {item.entity.favorite ? t("removeFavorite") : t("favorite")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          );
+
+          if (isPinnedFrameItem(item)) {
+            return (
+              <DashboardPinnedFrameCard
+                collections={collections}
+                isDragging={options.isDragging}
+                item={item}
+                menu={itemMenu}
+                placementWidth={node.placement.width}
+              />
+            );
+          }
 
           return (
             <ObjectTileCard
               avatarLabel={item.avatarLabel}
               avatarUrl={item.avatarUrl}
               className="cursor-grab active:cursor-grabbing"
-              menu={
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      data-space-no-drag="true"
-                      onClick={(event) => event.stopPropagation()}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      size="icon"
-                      variant="ghost"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => navigate(item.route)}>
-                      {t("open")}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() =>
-                        void saveItem(item.collectionName, togglePinned(item.entity) as never)
-                      }
-                    >
-                      {t("unpin")}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() =>
-                        void saveItem(
-                          item.collectionName,
-                          ensureShortcutBoardPlacements(
-                            toggleFavorite(item.entity),
-                            settings,
-                            DASHBOARD_ITEM_SIZE
-                          ) as never
-                        )
-                      }
-                    >
-                      {item.entity.favorite ? t("removeFavorite") : t("favorite")}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              }
+              menu={itemMenu}
               subtitle={item.subtitle}
               title={item.title}
             />
@@ -936,15 +960,258 @@ export default function DashboardPage() {
           </div>
         ) : null}
       </Modal>
+    </div>
+  );
+}
 
-      <BoardTextEditorModal
-        form={textForm}
-        onChange={setTextForm}
-        onClose={() => setTextModalOpen(false)}
-        onSave={() => void saveTextCard()}
-        open={textModalOpen}
-        title={textForm.id ? t("editText") : t("createText")}
-      />
+function DashboardPinnedFrameCard({
+  item,
+  collections,
+  placementWidth,
+  isDragging,
+  menu,
+}: {
+  item: DashboardPinnedItem;
+  collections: ReturnType<typeof useAppData>["collections"];
+  placementWidth: number;
+  isDragging?: boolean;
+  menu?: React.ReactNode;
+}) {
+  const { t } = useI18n();
+
+  if (item.collectionName === "linkGroups") {
+    const group = item.entity as CollectionMap["linkGroups"];
+    const links = filterActive(collections.links)
+      .filter((entry) => !entry.archivedAt && entry.groupId === group.id)
+      .slice(0, 6);
+    const totalCount = filterActive(collections.links).filter(
+      (entry) => !entry.archivedAt && entry.groupId === group.id
+    ).length;
+
+    return (
+      <CanvasFrame
+        accent={group.accent}
+        cornerRadius={group.cornerRadius}
+        count={totalCount}
+        isDragging={isDragging}
+        menu={menu}
+        placementWidth={placementWidth}
+        subtitle={group.description || t("links")}
+        title={group.title}
+      >
+        {links.length ? (
+          <div className="pointer-events-none grid h-full auto-rows-fr grid-cols-3 gap-3">
+            {links.map((link) => (
+              <div
+                className="flex min-h-0 items-center gap-3 overflow-hidden border border-white/10 bg-black/35 px-3 py-3 backdrop-blur-sm"
+                key={link.id}
+                style={{ borderRadius: link.cornerRadius }}
+              >
+                <img
+                  alt={link.title}
+                  className="h-10 w-10 rounded-full object-cover"
+                  draggable={false}
+                  src={link.customIconUrl || link.iconUrl}
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-semibold text-white/95">{link.title}</p>
+                  <p className="truncate text-[11px] text-white/60">
+                    {link.statusText || link.description || link.url}
+                  </p>
+                </div>
+              </div>
+            ))}
+            {totalCount > links.length ? (
+              <DashboardPreviewOverflow count={totalCount - links.length} />
+            ) : null}
+          </div>
+        ) : (
+          <DashboardPreviewEmpty label={t("noGroup")} />
+        )}
+      </CanvasFrame>
+    );
+  }
+
+  if (item.collectionName === "taskGroups") {
+    const group = item.entity as CollectionMap["taskGroups"];
+    const tasks = filterActive(collections.tasks)
+      .filter(
+        (entry) =>
+          !entry.archivedAt &&
+          entry.groupId === group.id &&
+          entry.taskStatus === "todo"
+      )
+      .slice(0, 4);
+    const totalCount = filterActive(collections.tasks).filter(
+      (entry) =>
+        !entry.archivedAt &&
+        entry.groupId === group.id &&
+        entry.taskStatus === "todo"
+    ).length;
+    const priorityLabelMap = {
+      low: t("priorityLow"),
+      medium: t("priorityMedium"),
+      high: t("priorityHigh"),
+      urgent: t("priorityUrgent"),
+    } as const;
+
+    return (
+      <CanvasFrame
+        accent={group.accent}
+        cornerRadius={group.cornerRadius}
+        count={totalCount}
+        isDragging={isDragging}
+        menu={menu}
+        placementWidth={placementWidth}
+        subtitle={group.description || t("tasks")}
+        title={group.title}
+      >
+        {tasks.length ? (
+          <div className="pointer-events-none grid h-full auto-rows-fr grid-cols-2 gap-3">
+            {tasks.map((task) => (
+              <div
+                className="flex min-h-0 flex-col justify-between overflow-hidden border border-white/10 bg-black/35 p-3 backdrop-blur-sm"
+                key={task.id}
+                style={{ borderRadius: task.cornerRadius }}
+              >
+                <div className="min-w-0">
+                  <p className="line-clamp-2 text-sm font-semibold text-white/95">{task.title}</p>
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-white/60">
+                    {task.description || priorityLabelMap[task.priority]}
+                  </p>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge className="border-white/10 bg-black/30 text-white/70">
+                    {priorityLabelMap[task.priority]}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+            {totalCount > tasks.length ? (
+              <DashboardPreviewOverflow count={totalCount - tasks.length} />
+            ) : null}
+          </div>
+        ) : (
+          <DashboardPreviewEmpty label={t("noGroup")} />
+        )}
+      </CanvasFrame>
+    );
+  }
+
+  if (item.collectionName === "noteGroups") {
+    const group = item.entity as CollectionMap["noteGroups"];
+    const notes = filterActive(collections.notes)
+      .filter((entry) => !entry.archivedAt && entry.groupId === group.id)
+      .slice(0, 6);
+    const totalCount = filterActive(collections.notes).filter(
+      (entry) => !entry.archivedAt && entry.groupId === group.id
+    ).length;
+
+    return (
+      <CanvasFrame
+        accent={group.accent}
+        cornerRadius={group.cornerRadius}
+        count={totalCount}
+        isDragging={isDragging}
+        menu={menu}
+        placementWidth={placementWidth}
+        subtitle={group.description || t("notes")}
+        title={group.title}
+      >
+        {notes.length ? (
+          <div className="pointer-events-none grid h-full auto-rows-fr grid-cols-3 gap-3">
+            {notes.map((note) => (
+              <div
+                className="flex min-h-0 flex-col overflow-hidden border border-white/10 bg-black/35 p-3 backdrop-blur-sm"
+                key={note.id}
+                style={{ borderRadius: note.cornerRadius }}
+              >
+                <p className="truncate text-sm font-semibold text-white/95">{note.title}</p>
+                <p className="mt-2 line-clamp-4 text-xs leading-5 text-white/60">
+                  {note.description || note.content}
+                </p>
+              </div>
+            ))}
+            {totalCount > notes.length ? (
+              <DashboardPreviewOverflow count={totalCount - notes.length} />
+            ) : null}
+          </div>
+        ) : (
+          <DashboardPreviewEmpty label={t("noGroup")} />
+        )}
+      </CanvasFrame>
+    );
+  }
+
+  const list = item.entity as CollectionMap["lists"];
+  const listItems = filterActive(collections.listItems)
+    .filter((entry) => !entry.archivedAt && entry.listId === list.id)
+    .slice(0, 6);
+  const totalCount = filterActive(collections.listItems).filter(
+    (entry) => !entry.archivedAt && entry.listId === list.id
+  ).length;
+
+  return (
+    <CanvasFrame
+      accent={list.accent}
+      cornerRadius={list.cornerRadius}
+      count={totalCount}
+      coverUrl={list.coverUrl || undefined}
+      isDragging={isDragging}
+      menu={menu}
+      placementWidth={placementWidth}
+      subtitle={list.description || list.listType || t("lists")}
+      title={list.title}
+    >
+      {listItems.length ? (
+        <div className="pointer-events-none grid h-full auto-rows-fr grid-cols-3 gap-3">
+          {listItems.map((entry) => (
+            <div
+              className="flex min-h-0 flex-col overflow-hidden border border-white/10 bg-black/35 backdrop-blur-sm"
+              key={entry.id}
+              style={{ borderRadius: entry.cornerRadius }}
+            >
+              {entry.imageUrl ? (
+                <img
+                  alt={entry.title}
+                  className="h-20 w-full object-cover"
+                  draggable={false}
+                  src={entry.imageUrl}
+                />
+              ) : (
+                <div className={`h-20 bg-gradient-to-br ${list.accent}`} />
+              )}
+              <div className="min-h-0 flex-1 p-3">
+                <p className="truncate text-xs font-semibold text-white/95">{entry.title}</p>
+                <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-white/60">
+                  {entry.description || entry.itemNotes || t("lists")}
+                </p>
+              </div>
+            </div>
+          ))}
+          {totalCount > listItems.length ? (
+            <DashboardPreviewOverflow count={totalCount - listItems.length} />
+          ) : null}
+        </div>
+      ) : (
+        <DashboardPreviewEmpty label={t("lists")} />
+      )}
+    </CanvasFrame>
+  );
+}
+
+function DashboardPreviewEmpty({ label }: { label: string }) {
+  return (
+    <div className="flex h-full items-center justify-center rounded-[22px] border border-dashed border-white/10 bg-black/25 px-4 text-center text-xs text-white/55">
+      {label}
+    </div>
+  );
+}
+
+function DashboardPreviewOverflow({ count }: { count: number }) {
+  return (
+    <div className="flex items-center justify-center rounded-[22px] border border-white/10 bg-black/35 px-3 py-3 text-base font-semibold text-white/70 backdrop-blur-sm">
+      +{count}
     </div>
   );
 }

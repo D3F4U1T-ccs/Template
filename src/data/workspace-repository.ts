@@ -84,7 +84,7 @@ const TASK_STATUSES = ["todo", "in-progress", "done"] as const;
 const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 const TASK_TYPES = ["day", "week", "month", "someday", "recurring"] as const;
 const REPEAT_RULES = ["none", "daily", "weekly", "monthly"] as const;
-const BOARD_TEXT_TONES: BoardTextTone[] = ["plain", "soft"];
+const BOARD_TEXT_TONES: BoardTextTone[] = ["plain", "solid", "glass"];
 
 function collectionPath(userId: string, collectionName: CollectionName) {
   return `users/${userId}/${collectionName}`;
@@ -388,7 +388,10 @@ function normalizeBoardTextItem(id: string, value: unknown): BoardTextItem {
     fontFamily: readString(record, "fontFamily", "\"Sora\", \"Trebuchet MS\", sans-serif"),
     fontSize: Math.min(Math.max(readNumber(record, "fontSize", 28), 14), 72),
     textColor: readString(record, "textColor", "#f8fafc"),
-    tone: readEnumValue(record.tone, BOARD_TEXT_TONES, "soft"),
+    tone:
+      typeof record.tone === "string" && record.tone === "soft"
+        ? "glass"
+        : readEnumValue(record.tone, BOARD_TEXT_TONES, "glass"),
   };
 }
 

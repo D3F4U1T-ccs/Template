@@ -12,6 +12,7 @@ export function CanvasFrame({
   placementWidth,
   isDragging,
   menu,
+  children,
 }: {
   title: string;
   subtitle?: string;
@@ -22,6 +23,7 @@ export function CanvasFrame({
   placementWidth: number;
   isDragging?: boolean;
   menu?: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   const titleClass =
     placementWidth >= 880 ? "text-lg" : placementWidth >= 620 ? "text-base" : "text-sm";
@@ -62,7 +64,9 @@ export function CanvasFrame({
           {menu ? <div data-space-no-drag="true">{menu}</div> : null}
         </div>
 
-        <div className="relative mt-auto flex justify-end">
+        <div className="relative mt-4 min-h-0 flex-1">{children}</div>
+
+        <div className="relative mt-4 flex justify-end">
           <Badge className="border-white/10 bg-black/30 text-white/70">{count}</Badge>
         </div>
       </div>

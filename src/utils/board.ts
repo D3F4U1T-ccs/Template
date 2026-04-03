@@ -54,7 +54,7 @@ export const DEFAULT_TEXT_STYLE: Pick<
   fontFamily: "\"Sora\", \"Trebuchet MS\", sans-serif",
   fontSize: 32,
   textColor: "#f8fafc",
-  tone: "soft",
+  tone: "glass",
 };
 
 export function ensureEntityCenteredInSpace<T extends BaseEntity>(
@@ -107,4 +107,19 @@ export function ensureShortcutBoardPlacements<T extends BaseEntity>(
   }
 
   return nextItem;
+}
+
+export function getFontSizeFromResize(args: {
+  currentFontSize: number;
+  origin: SpacePlacement;
+  preview: SpacePlacement;
+  min?: number;
+  max?: number;
+}) {
+  const { currentFontSize, origin, preview, min = 14, max = 96 } = args;
+  const widthRatio = preview.width / Math.max(origin.width, 1);
+  const heightRatio = preview.height / Math.max(origin.height, 1);
+  const scale = Math.max(widthRatio, heightRatio);
+
+  return Math.min(Math.max(Math.round(currentFontSize * scale), min), max);
 }

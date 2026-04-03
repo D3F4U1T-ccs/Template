@@ -148,7 +148,7 @@ export interface NoteDocument extends BaseEntity {
   content: string;
 }
 
-export type BoardTextTone = "plain" | "soft";
+export type BoardTextTone = "plain" | "solid" | "glass";
 
 export interface BoardTextItem extends BaseEntity {
   space: WorkspaceSpaceKey;

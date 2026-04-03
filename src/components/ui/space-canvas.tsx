@@ -18,6 +18,7 @@ export interface SpaceCanvasNode<T> {
   placement: SpacePlacement;
   data: T;
   resizable?: boolean;
+  resizeMode?: "placement" | "font-size";
   minSize?: {
     width: number;
     height: number;
@@ -30,11 +31,21 @@ type SpaceCanvasProps<T> = {
   viewport: SpaceViewport;
   onViewportChange: (viewport: SpaceViewport) => void;
   onPlacementCommit: (id: string, placement: SpacePlacement) => void;
+  onFontResizeCommit?: (args: {
+    id: string;
+    origin: SpacePlacement;
+    preview: SpacePlacement;
+    direction: ResizeDirection;
+  }) => void;
   onNodeClick?: (node: SpaceCanvasNode<T>) => void;
   getLinkedNodeIds?: (node: SpaceCanvasNode<T>) => string[];
   renderNode: (
     node: SpaceCanvasNode<T>,
-    options: { isDragging: boolean; isLinkedDragging: boolean }
+    options: {
+      isDragging: boolean;
+      isLinkedDragging: boolean;
+      previewPlacement: SpacePlacement;
+    }
   ) => React.ReactNode;
   className?: string;
   canvasClassName?: string;
@@ -145,6 +156,7 @@ export function SpaceCanvas<T>({
   viewport,
   onViewportChange,
   onPlacementCommit,
+  onFontResizeCommit,
   onNodeClick,
   getLinkedNodeIds,
   renderNode,
@@ -183,7 +195,11 @@ export function SpaceCanvas<T>({
     () =>
       nodes.map((node) => ({
         ...node,
-        placement: draftPlacements[node.id] ?? node.placement,
+        placement:
+          node.resizeMode === "font-size"
+            ? node.placement
+            : draftPlacements[node.id] ?? node.placement,
+        previewPlacement: draftPlacements[node.id] ?? node.placement,
       })),
     [draftPlacements, nodes]
   );
@@ -278,6 +294,7 @@ export function SpaceCanvas<T>({
 
       if (resizeRef.current) {
         const currentResize = resizeRef.current;
+        const node = nodes.find((entry) => entry.id === currentResize.id);
         const placement = draftPlacements[currentResize.id] ?? currentResize.origin;
         const changed =
           placement.x !== currentResize.origin.x ||
@@ -286,7 +303,16 @@ export function SpaceCanvas<T>({
           placement.height !== currentResize.origin.height;
 
         if (changed) {
-          onPlacementCommit(currentResize.id, placement);
+          if (node?.resizeMode === "font-size" && onFontResizeCommit) {
+            onFontResizeCommit({
+              id: currentResize.id,
+              origin: currentResize.origin,
+              preview: placement,
+              direction: currentResize.direction,
+            });
+          } else {
+            onPlacementCommit(currentResize.id, placement);
+          }
           suppressClickUntilRef.current = performance.now() + 180;
         }
       }
@@ -311,8 +337,10 @@ export function SpaceCanvas<T>({
   }, [
     draftPlacements,
     onNodeClick,
+    onFontResizeCommit,
     onPlacementCommit,
     onViewportChange,
+    nodes,
     resolvedNodes,
     viewport.zoom,
   ]);
@@ -577,6 +605,7 @@ export function SpaceCanvas<T>({
               {renderNode(node, {
                 isDragging: draggingId === node.id,
                 isLinkedDragging: linkedDraggingIds.includes(node.id),
+                previewPlacement: node.previewPlacement,
               })}
               {node.resizable
                 ? resizeHandles.map((handle) => (

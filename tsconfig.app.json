@@ -22,7 +22,6 @@
 
     // Path
 
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }

@@ -5,10 +5,6 @@ import { MoreHorizontal, Plus } from "lucide-react";
 import { accentOptions, defaultListFeatures, listFeatureOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
 import { BoardTextCard } from "@/components/ui/board-text-card";
-import {
-  BoardTextEditorModal,
-  type BoardTextFormState,
-} from "@/components/ui/board-text-editor-modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
@@ -45,6 +41,7 @@ import {
   LIST_FRAME_LAYOUT,
   createContainerPlacement,
   ensureEntityCenteredInSpace,
+  getFontSizeFromResize,
   ensureShortcutBoardPlacements,
 } from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
@@ -107,16 +104,6 @@ const emptyItemForm = {
   tags: "",
 };
 
-const emptyTextForm: BoardTextFormState = {
-  id: "",
-  content: "",
-  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
-  fontSize: DEFAULT_TEXT_STYLE.fontSize,
-  textColor: DEFAULT_TEXT_STYLE.textColor,
-  tone: DEFAULT_TEXT_STYLE.tone,
-  cornerRadius: 26,
-};
-
 export default function ListsPage() {
   const navigate = useNavigate();
   const { listId } = useParams();
@@ -125,10 +112,9 @@ export default function ListsPage() {
   const { t } = useI18n();
   const [listModalOpen, setListModalOpen] = useState(false);
   const [itemModalOpen, setItemModalOpen] = useState(false);
-  const [textModalOpen, setTextModalOpen] = useState(false);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [listForm, setListForm] = useState(emptyListForm);
   const [itemForm, setItemForm] = useState(emptyItemForm);
-  const [textForm, setTextForm] = useState(emptyTextForm);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const listFeatureCopy = useMemo(
     () => ({
@@ -353,11 +339,12 @@ export default function ListsPage() {
         })
       ),
       resizable: true,
+      resizeMode: "font-size",
       minSize: {
         width: 220,
         height: 120,
       },
-      zIndex: 24,
+      zIndex: 60,
     }));
 
     return [...frameNodes, ...itemNodes, ...textNodes];
@@ -395,21 +382,29 @@ export default function ListsPage() {
   }
 
   function openCreateText() {
-    setTextForm(emptyTextForm);
-    setTextModalOpen(true);
-  }
+    const nextText = ensureEntityCenteredInSpace(
+      upsertEntity<BoardTextItem>(
+        undefined,
+        {
+          title: "",
+          description: "",
+          space: LISTS_SPACE,
+          content: "",
+          fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+          fontSize: DEFAULT_TEXT_STYLE.fontSize,
+          textColor: DEFAULT_TEXT_STYLE.textColor,
+          tone: DEFAULT_TEXT_STYLE.tone,
+          cornerRadius: 0,
+        },
+        nextOrder(collections.boardTexts)
+      ),
+      LISTS_SPACE,
+      viewport,
+      DEFAULT_TEXT_SIZE
+    );
 
-  function openEditText(text: BoardTextItem) {
-    setTextForm({
-      id: text.id,
-      content: text.content,
-      fontFamily: text.fontFamily,
-      fontSize: text.fontSize,
-      textColor: text.textColor,
-      tone: text.tone,
-      cornerRadius: text.cornerRadius,
-    });
-    setTextModalOpen(true);
+    setSelectedTextId(nextText.id);
+    void saveItem("boardTexts", nextText);
   }
 
   function openEditItem(item: SmartListItem) {
@@ -546,37 +541,6 @@ export default function ListsPage() {
     setItemModalOpen(false);
   }
 
-  async function saveTextCard() {
-    const current = collections.boardTexts.find((item) => item.id === textForm.id);
-    let nextText = upsertEntity<BoardTextItem>(
-      current,
-      {
-        title: "",
-        description: "",
-        space: LISTS_SPACE,
-        content: textForm.content,
-        fontFamily: textForm.fontFamily,
-        fontSize: textForm.fontSize,
-        textColor: textForm.textColor,
-        tone: textForm.tone,
-        cornerRadius: textForm.cornerRadius,
-      },
-      current?.order ?? nextOrder(collections.boardTexts)
-    );
-
-    if (!nextText.spacePlacements?.[LISTS_SPACE]) {
-      nextText = ensureEntityCenteredInSpace(
-        nextText,
-        LISTS_SPACE,
-        viewport,
-        DEFAULT_TEXT_SIZE
-      );
-    }
-
-    await saveItem("boardTexts", nextText);
-    setTextModalOpen(false);
-  }
-
   async function handleItemDrop(overId: string) {
     if (!draggedId || !selectedList || draggedId === overId) {
       return;
@@ -704,16 +668,18 @@ export default function ListsPage() {
         nodes={nodes}
         onNodeClick={(node) => {
           if (node.data.kind === "frame") {
+            setSelectedTextId(null);
             navigate(`/lists/${node.data.list.id}`);
             return;
           }
 
           if (node.data.kind === "text") {
-            openEditText(node.data.text);
+            setSelectedTextId(node.data.text.id);
             return;
           }
 
           if (node.data.kind === "item") {
+            setSelectedTextId(null);
             openEditItem(node.data.item);
           }
         }}
@@ -741,6 +707,7 @@ export default function ListsPage() {
           }
 
           if (node.data.kind === "text") {
+            setSelectedTextId(node.data.text.id);
             void saveItem("boardTexts", setSpacePlacement(node.data.text, LISTS_SPACE, placement));
             return;
           }
@@ -748,6 +715,24 @@ export default function ListsPage() {
           void handleItemPlacementCommit(node.data.item, placement);
         }}
         onViewportChange={setViewport}
+        onFontResizeCommit={({ id, origin, preview }) => {
+          const text = boardTexts.find((entry) => `text-${entry.id}` === id);
+
+          if (!text) {
+            return;
+          }
+
+          setSelectedTextId(text.id);
+          void saveItem("boardTexts", {
+            ...text,
+            fontSize: getFontSizeFromResize({
+              currentFontSize: text.fontSize,
+              origin,
+              preview,
+              max: 160,
+            }),
+          });
+        }}
         renderNode={(node, options) => {
           if (node.data.kind === "frame") {
             const frame = node.data.list;
@@ -785,32 +770,21 @@ export default function ListsPage() {
             return (
               <BoardTextCard
                 className="cursor-grab active:cursor-grabbing"
+                active={selectedTextId === textNode.text.id}
                 item={textNode.text}
-                menu={
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        data-space-no-drag="true"
-                        onClick={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        size="icon"
-                        variant="ghost"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
-                        {t("editText")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
-                      >
-                        {t("delete")}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                onActivate={() => setSelectedTextId(textNode.text.id)}
+                onSave={(patch) =>
+                  void saveItem("boardTexts", {
+                    ...textNode.text,
+                    ...patch,
+                  })
                 }
+                previewFontSize={getFontSizeFromResize({
+                  currentFontSize: textNode.text.fontSize,
+                  origin: node.placement,
+                  preview: options.previewPlacement,
+                  max: 160,
+                })}
               />
             );
           }
@@ -1249,15 +1223,6 @@ export default function ListsPage() {
           </div>
         ) : null}
       </Modal>
-
-      <BoardTextEditorModal
-        form={textForm}
-        onChange={setTextForm}
-        onClose={() => setTextModalOpen(false)}
-        onSave={() => void saveTextCard()}
-        open={textModalOpen}
-        title={textForm.id ? t("editText") : t("createText")}
-      />
     </div>
   );
 }

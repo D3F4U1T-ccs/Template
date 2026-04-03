@@ -99,7 +99,8 @@ export function BoardTextEditorModal({
             value={form.tone}
           >
             <option value="plain">{t("textTonePlain")}</option>
-            <option value="soft">{t("textToneSoft")}</option>
+            <option value="solid">{t("textToneSolid")}</option>
+            <option value="glass">{t("textToneGlass")}</option>
           </Select>
         </Field>
         <Field hint={`${form.cornerRadius}px`} label={t("fieldRoundness")}>
