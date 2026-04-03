@@ -2,6 +2,11 @@ import { useMemo, useState } from "react";
 import { Check, MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
+import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  BoardTextEditorModal,
+  type BoardTextFormState,
+} from "@/components/ui/board-text-editor-modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { SpaceCanvas, type SpaceCanvasNode } from "@/components/ui/space-canvas";
@@ -18,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import type {
+  BoardTextItem,
   RepeatRule,
   TaskGroup,
   TaskItem,
@@ -27,21 +33,35 @@ import type {
 import {
   filterActive,
   getSpacePlacement,
-  markDeleted,
   nextOrder,
   nowIso,
   setSpacePlacement,
-  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
+import {
+  DEFAULT_TEXT_SIZE,
+  DEFAULT_TEXT_STYLE,
+  TASK_GROUP_LAYOUT,
+  createContainerPlacement,
+  ensureEntityCenteredInSpace,
+  ensureShortcutBoardPlacements,
+} from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
 import { formatDate } from "@/utils/date";
 
 const TASKS_SPACE: WorkspaceSpaceKey = "tasks-board";
 const GROUP_MIN_WIDTH = 420;
 const GROUP_MIN_HEIGHT = 280;
+const TASK_TILE_SIZE = {
+  width: 308,
+  height: 198,
+};
+const GROUP_DEFAULT_SIZE = {
+  width: 760,
+  height: 380,
+};
 
 type TaskBoardData =
   | {
@@ -53,6 +73,10 @@ type TaskBoardData =
       kind: "task";
       task: TaskItem;
       group: TaskGroup | null;
+    }
+  | {
+      kind: "text";
+      text: BoardTextItem;
     };
 
 const emptyTaskForm = {
@@ -80,16 +104,28 @@ const emptyGroupForm = {
   favorite: false,
 };
 
+const emptyTextForm: BoardTextFormState = {
+  id: "",
+  content: "",
+  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+  fontSize: DEFAULT_TEXT_STYLE.fontSize,
+  textColor: DEFAULT_TEXT_STYLE.textColor,
+  tone: DEFAULT_TEXT_STYLE.tone,
+  cornerRadius: 26,
+};
+
 export default function TasksPage() {
-  const { collections, saveItem, saveMany } = useAppData();
+  const { collections, hardDelete, saveItem, saveMany, settings } = useAppData();
   const { viewport, setViewport } = useSpaceViewport(TASKS_SPACE);
   const { pushToast } = useToast();
   const { t } = useI18n();
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [textModalOpen, setTextModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [taskForm, setTaskForm] = useState(emptyTaskForm);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
+  const [textForm, setTextForm] = useState(emptyTextForm);
 
   const groups = useMemo(
     () => filterActive(collections.taskGroups).filter((item) => !item.archivedAt),
@@ -101,6 +137,11 @@ export default function TasksPage() {
         (item) => !item.archivedAt && item.taskStatus === "todo"
       ),
     [collections.tasks]
+  );
+  const boardTexts = useMemo(
+    () =>
+      filterActive(collections.boardTexts).filter((item) => item.space === TASKS_SPACE),
+    [collections.boardTexts]
   );
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
@@ -126,8 +167,8 @@ export default function TasksPage() {
           createGridPlacement(index, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -152,8 +193,8 @@ export default function TasksPage() {
         createGridPlacement(0, {
           startX: 120,
           startY: 120,
-          width: 760,
-          height: 380,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
           columns: 2,
           gapX: 48,
           gapY: 48,
@@ -186,8 +227,8 @@ export default function TasksPage() {
           createGridPlacement(0, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -195,17 +236,17 @@ export default function TasksPage() {
         : null;
 
       const fallbackPlacement = parentGroup && parentPlacement
-        ? {
-            x: parentPlacement.x + 28 + (siblingIndex % 2) * 336,
-            y: parentPlacement.y + 84 + Math.floor(siblingIndex / 2) * 226,
-            width: 308,
-            height: 198,
-          }
+        ? createContainerPlacement(
+            parentPlacement,
+            siblingIndex,
+            TASK_TILE_SIZE,
+            TASK_GROUP_LAYOUT
+          ).placement
         : createGridPlacement(index, {
             startX: 1840,
             startY: 140,
-            width: 308,
-            height: 198,
+            width: TASK_TILE_SIZE.width,
+            height: TASK_TILE_SIZE.height,
             columns: 3,
             gapX: 24,
             gapY: 24,
@@ -223,11 +264,41 @@ export default function TasksPage() {
       };
     });
 
-    return [...groupNodes, ...taskNodes];
-  }, [groupPlacements, groups, tasks]);
+    const textNodes: Array<SpaceCanvasNode<TaskBoardData>> = boardTexts.map((text, index) => ({
+      id: `text-${text.id}`,
+      data: {
+        kind: "text",
+        text,
+      },
+      placement: getSpacePlacement(
+        text,
+        TASKS_SPACE,
+        createGridPlacement(index, {
+          startX: 1080,
+          startY: 120,
+          width: DEFAULT_TEXT_SIZE.width,
+          height: DEFAULT_TEXT_SIZE.height,
+          columns: 2,
+          gapX: 28,
+          gapY: 28,
+        })
+      ),
+      resizable: true,
+      minSize: {
+        width: 220,
+        height: 120,
+      },
+      zIndex: 24,
+    }));
 
-  function openCreateTask() {
-    setTaskForm(emptyTaskForm);
+    return [...groupNodes, ...taskNodes, ...textNodes];
+  }, [boardTexts, groupPlacements, groups, tasks]);
+
+  function openCreateTask(groupId?: string | null) {
+    setTaskForm({
+      ...emptyTaskForm,
+      groupId: groupId ?? "",
+    });
     setTaskModalOpen(true);
   }
 
@@ -256,6 +327,24 @@ export default function TasksPage() {
     setGroupModalOpen(true);
   }
 
+  function openCreateText() {
+    setTextForm(emptyTextForm);
+    setTextModalOpen(true);
+  }
+
+  function openEditText(text: BoardTextItem) {
+    setTextForm({
+      id: text.id,
+      content: text.content,
+      fontFamily: text.fontFamily,
+      fontSize: text.fontSize,
+      textColor: text.textColor,
+      tone: text.tone,
+      cornerRadius: text.cornerRadius,
+    });
+    setTextModalOpen(true);
+  }
+
   function openEditGroup(group: TaskGroup) {
     setSelectedGroupId(null);
     setGroupForm({
@@ -273,7 +362,7 @@ export default function TasksPage() {
 
   async function saveTask() {
     const existing = collections.tasks.find((item) => item.id === taskForm.id);
-    const task = upsertEntity<TaskItem>(
+    let task = upsertEntity<TaskItem>(
       existing,
       {
         title: taskForm.title.trim() || t("untitledTask"),
@@ -297,7 +386,50 @@ export default function TasksPage() {
       existing?.order ?? nextOrder(collections.tasks)
     );
 
-    await saveItem("tasks", task);
+    task = ensureShortcutBoardPlacements(task, settings, TASK_TILE_SIZE);
+    const targetGroup = task.groupId
+      ? groups.find((group) => group.id === task.groupId) ?? null
+      : null;
+
+    if (targetGroup && (!existing || existing.groupId !== task.groupId)) {
+      const targetGroupPlacement =
+        groupPlacements.get(targetGroup.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const siblingCount = tasks.filter(
+        (entry) => entry.groupId === targetGroup.id && entry.id !== task.id
+      ).length;
+      const { container, placement } = createContainerPlacement(
+        targetGroupPlacement,
+        siblingCount,
+        TASK_TILE_SIZE,
+        TASK_GROUP_LAYOUT
+      );
+
+      task = setSpacePlacement(task, TASKS_SPACE, placement);
+
+      await Promise.all([
+        saveItem("tasks", task),
+        container.width !== targetGroupPlacement.width ||
+        container.height !== targetGroupPlacement.height
+          ? saveItem("taskGroups", setSpacePlacement(targetGroup, TASKS_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!task.spacePlacements?.[TASKS_SPACE] && !task.groupId) {
+        task = ensureEntityCenteredInSpace(task, TASKS_SPACE, viewport, TASK_TILE_SIZE);
+      }
+
+      await saveItem("tasks", task);
+    }
+
     setTaskModalOpen(false);
     pushToast({
       title: existing ? t("edit") : t("createTask"),
@@ -308,7 +440,7 @@ export default function TasksPage() {
 
   async function saveGroup() {
     const current = collections.taskGroups.find((item) => item.id === groupForm.id);
-    const nextGroup = upsertEntity<TaskGroup>(
+    let nextGroup = upsertEntity<TaskGroup>(
       current,
       {
         title: groupForm.title.trim() || t("untitledGroup"),
@@ -322,6 +454,17 @@ export default function TasksPage() {
       current?.order ?? nextOrder(collections.taskGroups)
     );
 
+    nextGroup = ensureShortcutBoardPlacements(nextGroup, settings, GROUP_DEFAULT_SIZE);
+
+    if (!nextGroup.spacePlacements?.[TASKS_SPACE]) {
+      nextGroup = ensureEntityCenteredInSpace(
+        nextGroup,
+        TASKS_SPACE,
+        viewport,
+        GROUP_DEFAULT_SIZE
+      );
+    }
+
     await saveItem("taskGroups", nextGroup);
     setGroupModalOpen(false);
   }
@@ -333,6 +476,50 @@ export default function TasksPage() {
       taskStatus: "done",
       updatedAt: nowIso(),
     });
+  }
+
+  async function saveTextCard() {
+    const current = collections.boardTexts.find((item) => item.id === textForm.id);
+    let nextText = upsertEntity<BoardTextItem>(
+      current,
+      {
+        title: "",
+        description: "",
+        space: TASKS_SPACE,
+        content: textForm.content,
+        fontFamily: textForm.fontFamily,
+        fontSize: textForm.fontSize,
+        textColor: textForm.textColor,
+        tone: textForm.tone,
+        cornerRadius: textForm.cornerRadius,
+      },
+      current?.order ?? nextOrder(collections.boardTexts)
+    );
+
+    if (!nextText.spacePlacements?.[TASKS_SPACE]) {
+      nextText = ensureEntityCenteredInSpace(
+        nextText,
+        TASKS_SPACE,
+        viewport,
+        DEFAULT_TEXT_SIZE
+      );
+    }
+
+    await saveItem("boardTexts", nextText);
+    setTextModalOpen(false);
+  }
+
+  async function deleteGroup(group: TaskGroup) {
+    await Promise.all([
+      saveMany(
+        "tasks",
+        collections.tasks.map((task) =>
+          task.groupId === group.id ? { ...task, groupId: null } : task
+        )
+      ),
+      hardDelete("taskGroups", group.id),
+    ]);
+    setSelectedGroupId((current) => (current === group.id ? null : current));
   }
 
   async function handleGroupPlacementCommit(
@@ -425,7 +612,12 @@ export default function TasksPage() {
           </Button>
         </div>
         <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={openCreateTask}>
+          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+            {t("createText")}
+          </Button>
+        </div>
+        <div className="pointer-events-auto">
+          <Button className="gap-2 rounded-full" onClick={() => openCreateTask()}>
             <Plus className="h-4 w-4" />
             {t("createTask")}
           </Button>
@@ -437,7 +629,7 @@ export default function TasksPage() {
         emptyState={
           <EmptyState
             action={
-              <Button onClick={openCreateTask} variant="secondary">
+              <Button onClick={() => openCreateTask()} variant="secondary">
                 {t("createTask")}
               </Button>
             }
@@ -449,6 +641,11 @@ export default function TasksPage() {
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
             setSelectedGroupId(node.data.group.id);
+            return;
+          }
+
+          if (node.data.kind === "text") {
+            openEditText(node.data.text);
             return;
           }
 
@@ -479,6 +676,11 @@ export default function TasksPage() {
             return;
           }
 
+          if (node.data.kind === "text") {
+            void saveItem("boardTexts", setSpacePlacement(node.data.text, TASKS_SPACE, placement));
+            return;
+          }
+
           void handleTaskPlacementCommit(node.data.task, placement);
         }}
         onViewportChange={setViewport}
@@ -493,7 +695,49 @@ export default function TasksPage() {
                 placementWidth={node.placement.width}
                 taskCount={groupNode.taskCount}
                 onEdit={() => openEditGroup(groupNode.group)}
-                onSave={(item) => void saveItem("taskGroups", item)}
+                onDelete={() => void deleteGroup(groupNode.group)}
+                onSave={(item) =>
+                  void saveItem(
+                    "taskGroups",
+                    ensureShortcutBoardPlacements(item, settings, GROUP_DEFAULT_SIZE)
+                  )
+                }
+              />
+            );
+          }
+
+          if (node.data.kind === "text") {
+            const textNode = node.data;
+
+            return (
+              <BoardTextCard
+                className="cursor-grab active:cursor-grabbing"
+                item={textNode.text}
+                menu={
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        data-space-no-drag="true"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        size="icon"
+                        variant="ghost"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
+                        {t("editText")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
+                      >
+                        {t("delete")}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                }
               />
             );
           }
@@ -502,9 +746,15 @@ export default function TasksPage() {
 
           return (
             <TaskBoardCard
+              onDelete={() => void hardDelete("tasks", taskNode.task.id)}
               onComplete={() => void completeTask(taskNode.task)}
               onEdit={() => openEditTask(taskNode.task)}
-              onSave={(item) => void saveItem("tasks", item)}
+              onSave={(item) =>
+                void saveItem(
+                  "tasks",
+                  ensureShortcutBoardPlacements(item, settings, TASK_TILE_SIZE)
+                )
+              }
               task={taskNode.task}
             />
           );
@@ -702,17 +952,17 @@ export default function TasksPage() {
 
       <Modal
         footer={
-          <div className="flex justify-between gap-3">
-            <Button
-              onClick={() => {
-                if (selectedGroup) {
-                  openEditGroup(selectedGroup);
-                }
-              }}
-              variant="secondary"
-            >
-              {t("edit")}
-            </Button>
+          <div className="flex justify-end gap-3">
+            {selectedGroup ? (
+              <Button
+                className="gap-2"
+                onClick={() => openCreateTask(selectedGroup.id)}
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("createTask")}
+              </Button>
+            ) : null}
             <Button onClick={() => setSelectedGroupId(null)}>{t("cancel")}</Button>
           </div>
         }
@@ -723,11 +973,56 @@ export default function TasksPage() {
       >
         {selectedGroup ? (
           <div className="space-y-4">
-            {selectedGroup.description ? (
-              <p className="text-sm leading-6 text-[var(--app-muted)]">
-                {selectedGroup.description}
-              </p>
-            ) : null}
+            <div className="flex items-start justify-between gap-3">
+              {selectedGroup.description ? (
+                <p className="text-sm leading-6 text-[var(--app-muted)]">
+                  {selectedGroup.description}
+                </p>
+              ) : <div />}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => openEditGroup(selectedGroup)}>
+                    {t("edit")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      void saveItem(
+                        "taskGroups",
+                        ensureShortcutBoardPlacements(
+                          togglePinned(selectedGroup),
+                          settings,
+                          GROUP_DEFAULT_SIZE
+                        )
+                      )
+                    }
+                  >
+                    {selectedGroup.pinned ? t("unpin") : t("pin")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      void saveItem(
+                        "taskGroups",
+                        ensureShortcutBoardPlacements(
+                          toggleFavorite(selectedGroup),
+                          settings,
+                          GROUP_DEFAULT_SIZE
+                        )
+                      )
+                    }
+                  >
+                    {selectedGroup.favorite ? t("removeFavorite") : t("favorite")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void deleteGroup(selectedGroup)}>
+                    {t("delete")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             {selectedGroupTasks.length ? (
               <div className="space-y-3">
                 {selectedGroupTasks.map((task) => (
@@ -753,6 +1048,15 @@ export default function TasksPage() {
           </div>
         ) : null}
       </Modal>
+
+      <BoardTextEditorModal
+        form={textForm}
+        onChange={setTextForm}
+        onClose={() => setTextModalOpen(false)}
+        onSave={() => void saveTextCard()}
+        open={textModalOpen}
+        title={textForm.id ? t("editText") : t("createText")}
+      />
     </div>
   );
 }
@@ -762,11 +1066,13 @@ function TaskBoardCard({
   onEdit,
   onSave,
   onComplete,
+  onDelete,
 }: {
   task: TaskItem;
   onEdit: () => void;
   onSave: (item: TaskItem) => void;
   onComplete: () => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
   const priorityLabelMap = {
@@ -816,12 +1122,7 @@ function TaskBoardCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(task))}>
               {task.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(task))}>
-              {task.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(task))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -851,6 +1152,7 @@ function TaskFrameCard({
   isDragging,
   onEdit,
   onSave,
+  onDelete,
 }: {
   group: TaskGroup;
   taskCount: number;
@@ -858,6 +1160,7 @@ function TaskFrameCard({
   isDragging: boolean;
   onEdit: () => void;
   onSave: (item: TaskGroup) => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
@@ -888,12 +1191,7 @@ function TaskFrameCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(group))}>
               {group.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(group))}>
-              {group.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(group))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       }

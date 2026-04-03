@@ -10,6 +10,8 @@ import {
 import { useAppData } from "@/hooks/use-app-data";
 import { cn } from "@/shared/lib/utils";
 import type { SpacePlacement, SpaceViewport } from "@/types/models";
+import { debugSpaceEvent } from "@/utils/space-debug";
+import { clampZoom } from "@/utils/space";
 
 export interface SpaceCanvasNode<T> {
   id: string;
@@ -326,14 +328,30 @@ export function SpaceCanvas<T>({
         return;
       }
 
-      if (event.altKey) {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
         const pointerX = event.clientX - rect.left;
         const pointerY = event.clientY - rect.top;
         const boardX = (pointerX - viewport.x) / viewport.zoom;
         const boardY = (pointerY - viewport.y) / viewport.zoom;
-        const normalizedDelta = clamp(event.deltaY, -120, 120);
-        const zoomFactor = Math.exp(-normalizedDelta * 0.0022);
-        const nextZoom = clamp(viewport.zoom * zoomFactor, 0.1, 2.4);
+        const wheelDelta =
+          event.deltaMode === 1 ? event.deltaY * 18 : event.deltaMode === 2 ? event.deltaY * 72 : event.deltaY;
+        const normalizedDelta = clamp(wheelDelta, -180, 180);
+        const zoomFactor = Math.exp(-normalizedDelta * 0.0018);
+        const nextZoom = clampZoom(viewport.zoom * zoomFactor);
+
+        if (nextZoom === viewport.zoom) {
+          debugSpaceEvent("zoom-clamped", {
+            currentZoom: viewport.zoom,
+            deltaY: event.deltaY,
+          });
+          return;
+        }
+
+        debugSpaceEvent("zoom-wheel", {
+          currentZoom: viewport.zoom,
+          nextZoom,
+          deltaY: event.deltaY,
+        });
 
         onViewportChange({
           x: pointerX - boardX * nextZoom,

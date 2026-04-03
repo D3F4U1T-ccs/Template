@@ -31,6 +31,7 @@ export function createBaseEntity(order = 1): BaseEntity {
     favorite: false,
     archivedAt: null,
     deletedAt: null,
+    dashboardGroupId: null,
     order,
     tags: [],
     lastViewedAt: null,
@@ -54,6 +55,8 @@ export function upsertEntity<T extends BaseEntity>(
     updatedAt: nowIso(),
     cornerRadius: patch.cornerRadius ?? current?.cornerRadius ?? base.cornerRadius,
     order: current?.order ?? patch.order ?? order,
+    dashboardGroupId:
+      patch.dashboardGroupId ?? current?.dashboardGroupId ?? base.dashboardGroupId,
     tags: patch.tags ?? current?.tags ?? [],
     spacePlacements:
       patch.spacePlacements ?? current?.spacePlacements ?? base.spacePlacements,
@@ -169,6 +172,29 @@ export function setSpacePlacement<T extends BaseEntity>(
   return {
     ...item,
     spacePlacements: nextPlacements,
+    updatedAt: nowIso(),
+  };
+}
+
+export function ensureSpacePlacement<T extends BaseEntity>(
+  item: T,
+  space: WorkspaceSpaceKey,
+  placement: SpacePlacement
+) {
+  if (item.spacePlacements?.[space]) {
+    return item;
+  }
+
+  return setSpacePlacement(item, space, placement);
+}
+
+export function setDashboardGroupId<T extends BaseEntity>(
+  item: T,
+  dashboardGroupId: string | null
+) {
+  return {
+    ...item,
+    dashboardGroupId,
     updatedAt: nowIso(),
   };
 }

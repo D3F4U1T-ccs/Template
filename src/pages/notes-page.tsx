@@ -3,6 +3,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
+import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  BoardTextEditorModal,
+  type BoardTextFormState,
+} from "@/components/ui/board-text-editor-modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
@@ -19,25 +24,44 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import type { NoteDocument, NoteGroup, WorkspaceSpaceKey } from "@/types/models";
+import type {
+  BoardTextItem,
+  NoteDocument,
+  NoteGroup,
+  WorkspaceSpaceKey,
+} from "@/types/models";
 import {
   filterActive,
   getSpacePlacement,
-  markDeleted,
   markViewed,
   nextOrder,
   setSpacePlacement,
-  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
+import {
+  DEFAULT_TEXT_SIZE,
+  DEFAULT_TEXT_STYLE,
+  LINK_GROUP_LAYOUT,
+  createContainerPlacement,
+  ensureEntityCenteredInSpace,
+  ensureShortcutBoardPlacements,
+} from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
 import { formatDateTime } from "@/utils/date";
 
 const NOTES_SPACE: WorkspaceSpaceKey = "notes-board";
 const GROUP_MIN_WIDTH = 420;
 const GROUP_MIN_HEIGHT = 280;
+const NOTE_TILE_SIZE = {
+  width: 208,
+  height: 208,
+};
+const GROUP_DEFAULT_SIZE = {
+  width: 760,
+  height: 380,
+};
 
 type NoteBoardData =
   | {
@@ -49,6 +73,10 @@ type NoteBoardData =
       kind: "note";
       note: NoteDocument;
       group: NoteGroup | null;
+    }
+  | {
+      kind: "text";
+      text: BoardTextItem;
     };
 
 const emptyNoteForm = {
@@ -74,19 +102,31 @@ const emptyGroupForm = {
   favorite: false,
 };
 
+const emptyTextForm: BoardTextFormState = {
+  id: "",
+  content: "",
+  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+  fontSize: DEFAULT_TEXT_STYLE.fontSize,
+  textColor: DEFAULT_TEXT_STYLE.textColor,
+  tone: DEFAULT_TEXT_STYLE.tone,
+  cornerRadius: 26,
+};
+
 export default function NotesPage() {
   const navigate = useNavigate();
   const { noteId } = useParams();
-  const { collections, saveItem, saveMany } = useAppData();
+  const { collections, hardDelete, saveItem, saveMany, settings } = useAppData();
   const { viewport, setViewport } = useSpaceViewport(NOTES_SPACE);
   const { pushToast } = useToast();
   const { t } = useI18n();
   const viewedNoteIdRef = useRef<string | null>(null);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [textModalOpen, setTextModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
   const [form, setForm] = useState(emptyNoteForm);
+  const [textForm, setTextForm] = useState(emptyTextForm);
 
   const groups = useMemo(
     () => filterActive(collections.noteGroups).filter((item) => !item.archivedAt),
@@ -95,6 +135,11 @@ export default function NotesPage() {
   const notes = useMemo(
     () => filterActive(collections.notes).filter((item) => !item.archivedAt),
     [collections.notes]
+  );
+  const boardTexts = useMemo(
+    () =>
+      filterActive(collections.boardTexts).filter((item) => item.space === NOTES_SPACE),
+    [collections.boardTexts]
   );
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
@@ -125,8 +170,8 @@ export default function NotesPage() {
           createGridPlacement(index, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -151,8 +196,8 @@ export default function NotesPage() {
         createGridPlacement(0, {
           startX: 120,
           startY: 120,
-          width: 760,
-          height: 380,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
           columns: 2,
           gapX: 48,
           gapY: 48,
@@ -185,8 +230,8 @@ export default function NotesPage() {
           createGridPlacement(0, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -194,17 +239,17 @@ export default function NotesPage() {
         : null;
 
       const fallbackPlacement = parentGroup && parentPlacement
-        ? {
-            x: parentPlacement.x + 28 + (siblingIndex % 3) * 236,
-            y: parentPlacement.y + 84 + Math.floor(siblingIndex / 3) * 244,
-            width: 208,
-            height: 208,
-          }
+        ? createContainerPlacement(
+            parentPlacement,
+            siblingIndex,
+            NOTE_TILE_SIZE,
+            LINK_GROUP_LAYOUT
+          ).placement
         : createGridPlacement(index, {
             startX: 1840,
             startY: 140,
-            width: 208,
-            height: 208,
+            width: NOTE_TILE_SIZE.width,
+            height: NOTE_TILE_SIZE.height,
             columns: 5,
             gapX: 28,
             gapY: 28,
@@ -222,8 +267,35 @@ export default function NotesPage() {
       };
     });
 
-    return [...groupNodes, ...noteNodes];
-  }, [groupPlacements, groups, notes]);
+    const textNodes: Array<SpaceCanvasNode<NoteBoardData>> = boardTexts.map((text, index) => ({
+      id: `text-${text.id}`,
+      data: {
+        kind: "text",
+        text,
+      },
+      placement: getSpacePlacement(
+        text,
+        NOTES_SPACE,
+        createGridPlacement(index, {
+          startX: 1080,
+          startY: 120,
+          width: DEFAULT_TEXT_SIZE.width,
+          height: DEFAULT_TEXT_SIZE.height,
+          columns: 2,
+          gapX: 28,
+          gapY: 28,
+        })
+      ),
+      resizable: true,
+      minSize: {
+        width: 220,
+        height: 120,
+      },
+      zIndex: 24,
+    }));
+
+    return [...groupNodes, ...noteNodes, ...textNodes];
+  }, [boardTexts, groupPlacements, groups, notes]);
 
   const modalOpen = createOpen || !!selectedNote;
 
@@ -265,8 +337,12 @@ export default function NotesPage() {
     void saveItem("notes", markViewed(selectedNote));
   }, [saveItem, selectedNote]);
 
-  function openCreateNote() {
+  function openCreateNote(groupId?: string | null) {
     setCreateOpen(true);
+    setForm({
+      ...emptyNoteForm,
+      groupId: groupId ?? "",
+    });
     navigate("/notes");
   }
 
@@ -276,6 +352,24 @@ export default function NotesPage() {
       accent: accentOptions[Math.floor(Math.random() * accentOptions.length)],
     });
     setGroupModalOpen(true);
+  }
+
+  function openCreateText() {
+    setTextForm(emptyTextForm);
+    setTextModalOpen(true);
+  }
+
+  function openEditText(text: BoardTextItem) {
+    setTextForm({
+      id: text.id,
+      content: text.content,
+      fontFamily: text.fontFamily,
+      fontSize: text.fontSize,
+      textColor: text.textColor,
+      tone: text.tone,
+      cornerRadius: text.cornerRadius,
+    });
+    setTextModalOpen(true);
   }
 
   function openEditGroup(group: NoteGroup) {
@@ -300,7 +394,7 @@ export default function NotesPage() {
 
   async function saveNote() {
     const current = notes.find((item) => item.id === form.id);
-    const nextNote = upsertEntity<NoteDocument>(
+    let nextNote = upsertEntity<NoteDocument>(
       current,
       {
         title: form.title.trim() || t("untitledNote"),
@@ -318,7 +412,55 @@ export default function NotesPage() {
       current?.order ?? nextOrder(collections.notes)
     );
 
-    await saveItem("notes", nextNote);
+    nextNote = ensureShortcutBoardPlacements(nextNote, settings, NOTE_TILE_SIZE);
+    const targetGroup = nextNote.groupId
+      ? groups.find((group) => group.id === nextNote.groupId) ?? null
+      : null;
+
+    if (targetGroup && (!current || current.groupId !== nextNote.groupId)) {
+      const targetGroupPlacement =
+        groupPlacements.get(targetGroup.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const siblingCount = notes.filter(
+        (entry) => entry.groupId === targetGroup.id && entry.id !== nextNote.id
+      ).length;
+      const { container, placement } = createContainerPlacement(
+        targetGroupPlacement,
+        siblingCount,
+        NOTE_TILE_SIZE,
+        LINK_GROUP_LAYOUT
+      );
+
+      nextNote = setSpacePlacement(nextNote, NOTES_SPACE, placement);
+
+      await Promise.all([
+        saveItem("notes", nextNote),
+        container.width !== targetGroupPlacement.width ||
+        container.height !== targetGroupPlacement.height
+          ? saveItem("noteGroups", setSpacePlacement(targetGroup, NOTES_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!nextNote.spacePlacements?.[NOTES_SPACE] && !nextNote.groupId) {
+        nextNote = ensureEntityCenteredInSpace(
+          nextNote,
+          NOTES_SPACE,
+          viewport,
+          NOTE_TILE_SIZE
+        );
+      }
+
+      await saveItem("notes", nextNote);
+    }
+
     pushToast({
       title: current ? t("edit") : t("createNote"),
       description: t("noteSaved"),
@@ -330,7 +472,7 @@ export default function NotesPage() {
 
   async function saveGroup() {
     const current = collections.noteGroups.find((item) => item.id === groupForm.id);
-    const nextGroup = upsertEntity<NoteGroup>(
+    let nextGroup = upsertEntity<NoteGroup>(
       current,
       {
         title: groupForm.title.trim() || t("untitledGroup"),
@@ -344,16 +486,71 @@ export default function NotesPage() {
       current?.order ?? nextOrder(collections.noteGroups)
     );
 
+    nextGroup = ensureShortcutBoardPlacements(nextGroup, settings, GROUP_DEFAULT_SIZE);
+
+    if (!nextGroup.spacePlacements?.[NOTES_SPACE]) {
+      nextGroup = ensureEntityCenteredInSpace(
+        nextGroup,
+        NOTES_SPACE,
+        viewport,
+        GROUP_DEFAULT_SIZE
+      );
+    }
+
     await saveItem("noteGroups", nextGroup);
     setGroupModalOpen(false);
   }
 
   async function deleteNote(note: NoteDocument) {
-    await saveItem("notes", markDeleted(note));
+    await hardDelete("notes", note.id);
 
     if (note.id === selectedNote?.id) {
       closeModal();
     }
+  }
+
+  async function saveTextCard() {
+    const current = collections.boardTexts.find((item) => item.id === textForm.id);
+    let nextText = upsertEntity<BoardTextItem>(
+      current,
+      {
+        title: "",
+        description: "",
+        space: NOTES_SPACE,
+        content: textForm.content,
+        fontFamily: textForm.fontFamily,
+        fontSize: textForm.fontSize,
+        textColor: textForm.textColor,
+        tone: textForm.tone,
+        cornerRadius: textForm.cornerRadius,
+      },
+      current?.order ?? nextOrder(collections.boardTexts)
+    );
+
+    if (!nextText.spacePlacements?.[NOTES_SPACE]) {
+      nextText = ensureEntityCenteredInSpace(
+        nextText,
+        NOTES_SPACE,
+        viewport,
+        DEFAULT_TEXT_SIZE
+      );
+    }
+
+    await saveItem("boardTexts", nextText);
+    setTextModalOpen(false);
+  }
+
+  async function deleteGroup(group: NoteGroup) {
+    await Promise.all([
+      saveMany(
+        "notes",
+        collections.notes.map((note) =>
+          note.groupId === group.id ? { ...note, groupId: null } : note
+        )
+      ),
+      hardDelete("noteGroups", group.id),
+    ]);
+    setSelectedGroupId((current) => (current === group.id ? null : current));
   }
 
   async function handleGroupPlacementCommit(
@@ -446,7 +643,12 @@ export default function NotesPage() {
           </Button>
         </div>
         <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={openCreateNote}>
+          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+            {t("createText")}
+          </Button>
+        </div>
+        <div className="pointer-events-auto">
+          <Button className="gap-2 rounded-full" onClick={() => openCreateNote()}>
             <Plus className="h-4 w-4" />
             {t("createNote")}
           </Button>
@@ -458,7 +660,7 @@ export default function NotesPage() {
         emptyState={
           <EmptyState
             action={
-              <Button onClick={openCreateNote} variant="secondary">
+              <Button onClick={() => openCreateNote()} variant="secondary">
                 {t("createNote")}
               </Button>
             }
@@ -470,6 +672,11 @@ export default function NotesPage() {
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
             setSelectedGroupId(node.data.group.id);
+            return;
+          }
+
+          if (node.data.kind === "text") {
+            openEditText(node.data.text);
             return;
           }
 
@@ -500,6 +707,11 @@ export default function NotesPage() {
             return;
           }
 
+          if (node.data.kind === "text") {
+            void saveItem("boardTexts", setSpacePlacement(node.data.text, NOTES_SPACE, placement));
+            return;
+          }
+
           void handleNotePlacementCommit(node.data.note, placement);
         }}
         onViewportChange={setViewport}
@@ -514,7 +726,49 @@ export default function NotesPage() {
                 noteCount={groupNode.noteCount}
                 placementWidth={node.placement.width}
                 onEdit={() => openEditGroup(groupNode.group)}
-                onSave={(item) => void saveItem("noteGroups", item)}
+                onDelete={() => void deleteGroup(groupNode.group)}
+                onSave={(item) =>
+                  void saveItem(
+                    "noteGroups",
+                    ensureShortcutBoardPlacements(item, settings, GROUP_DEFAULT_SIZE)
+                  )
+                }
+              />
+            );
+          }
+
+          if (node.data.kind === "text") {
+            const textNode = node.data;
+
+            return (
+              <BoardTextCard
+                className="cursor-grab active:cursor-grabbing"
+                item={textNode.text}
+                menu={
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        data-space-no-drag="true"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        size="icon"
+                        variant="ghost"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
+                        {t("editText")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
+                      >
+                        {t("delete")}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                }
               />
             );
           }
@@ -526,7 +780,12 @@ export default function NotesPage() {
               note={noteNode.note}
               onDelete={() => void deleteNote(noteNode.note)}
               onOpen={() => navigate(`/notes/${noteNode.note.id}`)}
-              onSave={(item) => void saveItem("notes", item)}
+              onSave={(item) =>
+                void saveItem(
+                  "notes",
+                  ensureShortcutBoardPlacements(item, settings, NOTE_TILE_SIZE)
+                )
+              }
             />
           );
         }}
@@ -681,17 +940,17 @@ export default function NotesPage() {
 
       <Modal
         footer={
-          <div className="flex justify-between gap-3">
-            <Button
-              onClick={() => {
-                if (selectedGroup) {
-                  openEditGroup(selectedGroup);
-                }
-              }}
-              variant="secondary"
-            >
-              {t("edit")}
-            </Button>
+          <div className="flex justify-end gap-3">
+            {selectedGroup ? (
+              <Button
+                className="gap-2"
+                onClick={() => openCreateNote(selectedGroup.id)}
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("createNote")}
+              </Button>
+            ) : null}
             <Button onClick={() => setSelectedGroupId(null)}>{t("cancel")}</Button>
           </div>
         }
@@ -702,11 +961,56 @@ export default function NotesPage() {
       >
         {selectedGroup ? (
           <div className="space-y-4">
-            {selectedGroup.description ? (
-              <p className="text-sm leading-6 text-[var(--app-muted)]">
-                {selectedGroup.description}
-              </p>
-            ) : null}
+            <div className="flex items-start justify-between gap-3">
+              {selectedGroup.description ? (
+                <p className="text-sm leading-6 text-[var(--app-muted)]">
+                  {selectedGroup.description}
+                </p>
+              ) : <div />}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => openEditGroup(selectedGroup)}>
+                    {t("edit")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      void saveItem(
+                        "noteGroups",
+                        ensureShortcutBoardPlacements(
+                          togglePinned(selectedGroup),
+                          settings,
+                          GROUP_DEFAULT_SIZE
+                        )
+                      )
+                    }
+                  >
+                    {selectedGroup.pinned ? t("unpin") : t("pin")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      void saveItem(
+                        "noteGroups",
+                        ensureShortcutBoardPlacements(
+                          toggleFavorite(selectedGroup),
+                          settings,
+                          GROUP_DEFAULT_SIZE
+                        )
+                      )
+                    }
+                  >
+                    {selectedGroup.favorite ? t("removeFavorite") : t("favorite")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void deleteGroup(selectedGroup)}>
+                    {t("delete")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             {selectedGroupNotes.length ? (
               <div className="space-y-3">
                 {selectedGroupNotes.map((note) => (
@@ -732,6 +1036,15 @@ export default function NotesPage() {
           </div>
         ) : null}
       </Modal>
+
+      <BoardTextEditorModal
+        form={textForm}
+        onChange={setTextForm}
+        onClose={() => setTextModalOpen(false)}
+        onSave={() => void saveTextCard()}
+        open={textModalOpen}
+        title={textForm.id ? t("editText") : t("createText")}
+      />
     </div>
   );
 }
@@ -776,9 +1089,6 @@ function NoteTileCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(note))}>
               {note.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(note))}>
-              {note.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
             <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -796,6 +1106,7 @@ function NoteFrameCard({
   isDragging,
   onEdit,
   onSave,
+  onDelete,
 }: {
   group: NoteGroup;
   noteCount: number;
@@ -803,6 +1114,7 @@ function NoteFrameCard({
   isDragging: boolean;
   onEdit: () => void;
   onSave: (item: NoteGroup) => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
@@ -833,12 +1145,7 @@ function NoteFrameCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(group))}>
               {group.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(group))}>
-              {group.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(group))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       }

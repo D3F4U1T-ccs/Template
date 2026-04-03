@@ -1,5 +1,4 @@
 import {
-  Archive,
   FolderKanban,
   LayoutDashboard,
   Link2,
@@ -18,6 +17,8 @@ import type {
 import { nowIso } from "@/utils/entity";
 
 export const COLLECTION_NAMES: CollectionName[] = [
+  "dashboardGroups",
+  "boardTexts",
   "links",
   "linkGroups",
   "taskGroups",
@@ -38,7 +39,6 @@ export const navItems = [
   { key: "lists", label: "Lists", href: "/lists", icon: FolderKanban },
   { key: "notes", label: "Notes", href: "/notes", icon: NotepadText },
   { key: "favorites", label: "Favorites", href: "/favorites", icon: Star },
-  { key: "archive", label: "Archive", href: "/archive", icon: Archive },
 ] as const satisfies Array<{
   key: AppPageKey;
   label: string;
@@ -59,7 +59,6 @@ export const defaultListFeatures: ListFeatureConfig = {
   sortCheckedToBottom: false,
   tags: true,
   notes: true,
-  archive: true,
   favorite: true,
   check: false,
 };
@@ -81,7 +80,6 @@ export const listFeatureOptions: Array<{
   { key: "sortCheckedToBottom", label: "Checked to bottom", description: "Completed items sink down automatically." },
   { key: "tags", label: "Tags", description: "Store and search tags per item." },
   { key: "notes", label: "Item notes", description: "Extra contextual note field." },
-  { key: "archive", label: "Archive", description: "Archive items without deleting them." },
   { key: "favorite", label: "Favorite", description: "Mark highlights and bring them up." },
   { key: "check", label: "Generic checkbox", description: "Simple done / tracked boolean." },
 ];
@@ -101,7 +99,6 @@ export const defaultSettings: AppSettings = {
     "lists-board": { x: 0, y: 0, zoom: 1 },
     "notes-board": { x: 0, y: 0, zoom: 1 },
     "favorites-board": { x: 0, y: 0, zoom: 1 },
-    "archive-board": { x: 0, y: 0, zoom: 1 },
   },
 };
 
@@ -111,4 +108,12 @@ export const accentOptions = [
   "from-orange-500/30 to-amber-500/10",
   "from-rose-500/30 to-pink-500/10",
   "from-violet-500/30 to-fuchsia-500/10",
+];
+
+export const boardTextFontOptions = [
+  { label: "Sora", value: "\"Sora\", \"Trebuchet MS\", sans-serif" },
+  { label: "Alegreya", value: "\"Alegreya\", Georgia, serif" },
+  { label: "Manrope", value: "\"Manrope\", \"Segoe UI\", sans-serif" },
+  { label: "Cormorant", value: "\"Cormorant Garamond\", Garamond, serif" },
+  { label: "Montserrat", value: "\"Montserrat\", \"Segoe UI\", sans-serif" },
 ];

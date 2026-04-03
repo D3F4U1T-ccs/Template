@@ -2,6 +2,11 @@ import { useMemo, useState } from "react";
 import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
+import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  BoardTextEditorModal,
+  type BoardTextFormState,
+} from "@/components/ui/board-text-editor-modal";
 import { useI18n } from "@/data/i18n";
 import { Modal } from "@/components/ui/modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
@@ -18,19 +23,30 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import type { LinkGroup, LinkItem, WorkspaceSpaceKey } from "@/types/models";
+import type {
+  BoardTextItem,
+  LinkGroup,
+  LinkItem,
+  WorkspaceSpaceKey,
+} from "@/types/models";
 import { getFaviconUrl, normalizeUrl } from "@/utils/files";
 import {
   filterActive,
   getSpacePlacement,
-  markDeleted,
   nextOrder,
   setSpacePlacement,
-  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
+import {
+  DEFAULT_TEXT_SIZE,
+  DEFAULT_TEXT_STYLE,
+  LINK_GROUP_LAYOUT,
+  createContainerPlacement,
+  ensureEntityCenteredInSpace,
+  ensureShortcutBoardPlacements,
+} from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
 
 type LinkBoardData =
@@ -38,6 +54,10 @@ type LinkBoardData =
       kind: "link";
       link: LinkItem;
       group: LinkGroup | null;
+    }
+  | {
+      kind: "text";
+      text: BoardTextItem;
     }
   | {
       kind: "group";
@@ -48,6 +68,14 @@ type LinkBoardData =
 const LINKS_SPACE: WorkspaceSpaceKey = "links-board";
 const GROUP_MIN_WIDTH = 420;
 const GROUP_MIN_HEIGHT = 280;
+const LINK_TILE_SIZE = {
+  width: 208,
+  height: 208,
+};
+const GROUP_DEFAULT_SIZE = {
+  width: 760,
+  height: 380,
+};
 
 const emptyLinkForm = {
   id: "",
@@ -74,16 +102,28 @@ const emptyGroupForm = {
   favorite: false,
 };
 
+const emptyTextForm: BoardTextFormState = {
+  id: "",
+  content: "",
+  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+  fontSize: DEFAULT_TEXT_STYLE.fontSize,
+  textColor: DEFAULT_TEXT_STYLE.textColor,
+  tone: DEFAULT_TEXT_STYLE.tone,
+  cornerRadius: 26,
+};
+
 export default function LinksPage() {
-  const { collections, saveItem, saveMany } = useAppData();
+  const { collections, hardDelete, saveItem, saveMany, settings } = useAppData();
   const { viewport, setViewport } = useSpaceViewport(LINKS_SPACE);
   const { pushToast } = useToast();
   const { t } = useI18n();
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [textModalOpen, setTextModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [linkForm, setLinkForm] = useState(emptyLinkForm);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
+  const [textForm, setTextForm] = useState(emptyTextForm);
 
   const links = useMemo(
     () => filterActive(collections.links).filter((item) => !item.archivedAt),
@@ -92,6 +132,11 @@ export default function LinksPage() {
   const groups = useMemo(
     () => filterActive(collections.linkGroups).filter((item) => !item.archivedAt),
     [collections.linkGroups]
+  );
+  const boardTexts = useMemo(
+    () =>
+      filterActive(collections.boardTexts).filter((item) => item.space === LINKS_SPACE),
+    [collections.boardTexts]
   );
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
@@ -117,8 +162,8 @@ export default function LinksPage() {
           createGridPlacement(index, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -143,8 +188,8 @@ export default function LinksPage() {
         createGridPlacement(0, {
           startX: 120,
           startY: 120,
-          width: 760,
-          height: 380,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
           columns: 2,
           gapX: 48,
           gapY: 48,
@@ -177,8 +222,8 @@ export default function LinksPage() {
           createGridPlacement(0, {
             startX: 120,
             startY: 120,
-            width: 760,
-            height: 380,
+            width: GROUP_DEFAULT_SIZE.width,
+            height: GROUP_DEFAULT_SIZE.height,
             columns: 2,
             gapX: 48,
             gapY: 48,
@@ -186,17 +231,17 @@ export default function LinksPage() {
         : null;
 
       const fallbackPlacement = parentGroup && parentPlacement
-        ? {
-            x: parentPlacement.x + 28 + (siblingIndex % 3) * 236,
-            y: parentPlacement.y + 84 + Math.floor(siblingIndex / 3) * 244,
-            width: 208,
-            height: 208,
-          }
+        ? createContainerPlacement(
+            parentPlacement,
+            siblingIndex,
+            LINK_TILE_SIZE,
+            LINK_GROUP_LAYOUT
+          ).placement
         : createGridPlacement(index, {
             startX: 1840,
             startY: 140,
-            width: 208,
-            height: 208,
+            width: LINK_TILE_SIZE.width,
+            height: LINK_TILE_SIZE.height,
             columns: 5,
             gapX: 28,
             gapY: 28,
@@ -214,11 +259,41 @@ export default function LinksPage() {
       };
     });
 
-    return [...groupNodes, ...linkNodes];
-  }, [groupPlacements, groups, links]);
+    const textNodes: Array<SpaceCanvasNode<LinkBoardData>> = boardTexts.map((text, index) => ({
+      id: `text-${text.id}`,
+      data: {
+        kind: "text",
+        text,
+      },
+      placement: getSpacePlacement(
+        text,
+        LINKS_SPACE,
+        createGridPlacement(index, {
+          startX: 1040,
+          startY: 120,
+          width: DEFAULT_TEXT_SIZE.width,
+          height: DEFAULT_TEXT_SIZE.height,
+          columns: 2,
+          gapX: 28,
+          gapY: 28,
+        })
+      ),
+      resizable: true,
+      minSize: {
+        width: 220,
+        height: 120,
+      },
+      zIndex: 24,
+    }));
 
-  function openCreateLink() {
-    setLinkForm(emptyLinkForm);
+    return [...groupNodes, ...linkNodes, ...textNodes];
+  }, [boardTexts, groupPlacements, groups, links]);
+
+  function openCreateLink(groupId?: string | null) {
+    setLinkForm({
+      ...emptyLinkForm,
+      groupId: groupId ?? "",
+    });
     setLinkModalOpen(true);
   }
 
@@ -247,6 +322,24 @@ export default function LinksPage() {
     setGroupModalOpen(true);
   }
 
+  function openCreateText() {
+    setTextForm(emptyTextForm);
+    setTextModalOpen(true);
+  }
+
+  function openEditText(text: BoardTextItem) {
+    setTextForm({
+      id: text.id,
+      content: text.content,
+      fontFamily: text.fontFamily,
+      fontSize: text.fontSize,
+      textColor: text.textColor,
+      tone: text.tone,
+      cornerRadius: text.cornerRadius,
+    });
+    setTextModalOpen(true);
+  }
+
   function openEditGroup(group: LinkGroup) {
     setSelectedGroupId(null);
     setGroupForm({
@@ -266,7 +359,7 @@ export default function LinksPage() {
     const current = collections.links.find((item) => item.id === linkForm.id);
     const normalizedUrl = normalizeUrl(linkForm.url);
     const customIconUrl = linkForm.customIconUrl.trim();
-    const nextLink = upsertEntity<LinkItem>(
+    let nextLink = upsertEntity<LinkItem>(
       current,
       {
         title: linkForm.title.trim() || t("untitledLink"),
@@ -284,7 +377,55 @@ export default function LinksPage() {
       current?.order ?? nextOrder(collections.links)
     );
 
-    await saveItem("links", nextLink);
+    nextLink = ensureShortcutBoardPlacements(nextLink, settings, LINK_TILE_SIZE);
+    const targetGroup = nextLink.groupId
+      ? groups.find((group) => group.id === nextLink.groupId) ?? null
+      : null;
+
+    if (targetGroup && (!current || current.groupId !== nextLink.groupId)) {
+      const targetGroupPlacement =
+        groupPlacements.get(targetGroup.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: GROUP_DEFAULT_SIZE.width,
+          height: GROUP_DEFAULT_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        });
+      const siblingCount = links.filter(
+        (link) => link.groupId === targetGroup.id && link.id !== nextLink.id
+      ).length;
+      const { container, placement } = createContainerPlacement(
+        targetGroupPlacement,
+        siblingCount,
+        LINK_TILE_SIZE,
+        LINK_GROUP_LAYOUT
+      );
+
+      nextLink = setSpacePlacement(nextLink, LINKS_SPACE, placement);
+
+      await Promise.all([
+        saveItem("links", nextLink),
+        container.width !== targetGroupPlacement.width ||
+        container.height !== targetGroupPlacement.height
+          ? saveItem("linkGroups", setSpacePlacement(targetGroup, LINKS_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!nextLink.spacePlacements?.[LINKS_SPACE] && !nextLink.groupId) {
+        nextLink = ensureEntityCenteredInSpace(
+          nextLink,
+          LINKS_SPACE,
+          viewport,
+          LINK_TILE_SIZE
+        );
+      }
+
+      await saveItem("links", nextLink);
+    }
+
     setLinkModalOpen(false);
     pushToast({
       title: current ? t("edit") : t("addLink"),
@@ -295,7 +436,7 @@ export default function LinksPage() {
 
   async function saveGroupCard() {
     const current = collections.linkGroups.find((item) => item.id === groupForm.id);
-    const nextGroup = upsertEntity<LinkGroup>(
+    let nextGroup = upsertEntity<LinkGroup>(
       current,
       {
         title: groupForm.title.trim() || t("untitledGroup"),
@@ -309,6 +450,17 @@ export default function LinksPage() {
       current?.order ?? nextOrder(collections.linkGroups)
     );
 
+    nextGroup = ensureShortcutBoardPlacements(nextGroup, settings, GROUP_DEFAULT_SIZE);
+
+    if (!nextGroup.spacePlacements?.[LINKS_SPACE]) {
+      nextGroup = ensureEntityCenteredInSpace(
+        nextGroup,
+        LINKS_SPACE,
+        viewport,
+        GROUP_DEFAULT_SIZE
+      );
+    }
+
     await saveItem("linkGroups", nextGroup);
     setGroupModalOpen(false);
     pushToast({
@@ -319,11 +471,58 @@ export default function LinksPage() {
   }
 
   async function saveLinkItem(item: LinkItem) {
-    await saveItem("links", item);
+    await saveItem("links", ensureShortcutBoardPlacements(item, settings, LINK_TILE_SIZE));
   }
 
   async function saveGroupItem(item: LinkGroup) {
-    await saveItem("linkGroups", item);
+    await saveItem(
+      "linkGroups",
+      ensureShortcutBoardPlacements(item, settings, GROUP_DEFAULT_SIZE)
+    );
+  }
+
+  async function saveTextCard() {
+    const current = collections.boardTexts.find((item) => item.id === textForm.id);
+    let nextText = upsertEntity<BoardTextItem>(
+      current,
+      {
+        title: "",
+        description: "",
+        space: LINKS_SPACE,
+        content: textForm.content,
+        fontFamily: textForm.fontFamily,
+        fontSize: textForm.fontSize,
+        textColor: textForm.textColor,
+        tone: textForm.tone,
+        cornerRadius: textForm.cornerRadius,
+      },
+      current?.order ?? nextOrder(collections.boardTexts)
+    );
+
+    if (!nextText.spacePlacements?.[LINKS_SPACE]) {
+      nextText = ensureEntityCenteredInSpace(
+        nextText,
+        LINKS_SPACE,
+        viewport,
+        DEFAULT_TEXT_SIZE
+      );
+    }
+
+    await saveItem("boardTexts", nextText);
+    setTextModalOpen(false);
+  }
+
+  async function deleteGroup(group: LinkGroup) {
+    await Promise.all([
+      saveMany(
+        "links",
+        collections.links.map((link) =>
+          link.groupId === group.id ? { ...link, groupId: null } : link
+        )
+      ),
+      hardDelete("linkGroups", group.id),
+    ]);
+    setSelectedGroupId((current) => (current === group.id ? null : current));
   }
 
   async function handleGroupPlacementCommit(
@@ -416,7 +615,12 @@ export default function LinksPage() {
           </Button>
         </div>
         <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={openCreateLink}>
+          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+            {t("createText")}
+          </Button>
+        </div>
+        <div className="pointer-events-auto">
+          <Button className="gap-2 rounded-full" onClick={() => openCreateLink()}>
             <Plus className="h-4 w-4" />
             {t("addLink")}
           </Button>
@@ -428,7 +632,7 @@ export default function LinksPage() {
         emptyState={
           <EmptyState
             action={
-              <Button onClick={openCreateLink} variant="secondary">
+              <Button onClick={() => openCreateLink()} variant="secondary">
                 {t("addLink")}
               </Button>
             }
@@ -440,6 +644,11 @@ export default function LinksPage() {
         onNodeClick={(node) => {
           if (node.data.kind === "group") {
             setSelectedGroupId(node.data.group.id);
+            return;
+          }
+
+          if (node.data.kind === "text") {
+            openEditText(node.data.text);
             return;
           }
 
@@ -470,6 +679,11 @@ export default function LinksPage() {
             return;
           }
 
+          if (node.data.kind === "text") {
+            void saveItem("boardTexts", setSpacePlacement(node.data.text, LINKS_SPACE, placement));
+            return;
+          }
+
           void handleLinkPlacementCommit(node.data.link, placement);
         }}
         onViewportChange={setViewport}
@@ -484,7 +698,44 @@ export default function LinksPage() {
                 placementWidth={node.placement.width}
                 isDragging={options.isDragging}
                 onEdit={() => openEditGroup(groupNode.group)}
+                onDelete={() => void deleteGroup(groupNode.group)}
                 onSave={saveGroupItem}
+              />
+            );
+          }
+
+          if (node.data.kind === "text") {
+            const textNode = node.data;
+
+            return (
+              <BoardTextCard
+                className="cursor-grab active:cursor-grabbing"
+                item={textNode.text}
+                menu={
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        data-space-no-drag="true"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        size="icon"
+                        variant="ghost"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
+                        {t("editText")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
+                      >
+                        {t("delete")}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                }
               />
             );
           }
@@ -494,6 +745,7 @@ export default function LinksPage() {
           return (
             <LinkTileCard
               link={linkNode.link}
+              onDelete={() => void hardDelete("links", linkNode.link.id)}
               onEdit={() => openEditLink(linkNode.link)}
               onSave={saveLinkItem}
             />
@@ -659,17 +911,17 @@ export default function LinksPage() {
 
       <Modal
         footer={
-          <div className="flex justify-between gap-3">
-            <Button
-              onClick={() => {
-                if (selectedGroup) {
-                  openEditGroup(selectedGroup);
-                }
-              }}
-              variant="secondary"
-            >
-              {t("edit")}
-            </Button>
+          <div className="flex justify-end gap-3">
+            {selectedGroup ? (
+              <Button
+                className="gap-2"
+                onClick={() => openCreateLink(selectedGroup.id)}
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("addLink")}
+              </Button>
+            ) : null}
             <Button onClick={() => setSelectedGroupId(null)}>{t("cancel")}</Button>
           </div>
         }
@@ -680,11 +932,38 @@ export default function LinksPage() {
       >
         {selectedGroup ? (
           <div className="space-y-4">
-            {selectedGroup.description ? (
-              <p className="text-sm leading-6 text-[var(--app-muted)]">
-                {selectedGroup.description}
-              </p>
-            ) : null}
+            <div className="flex items-start justify-between gap-3">
+              {selectedGroup.description ? (
+                <p className="text-sm leading-6 text-[var(--app-muted)]">
+                  {selectedGroup.description}
+                </p>
+              ) : <div />}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => openEditGroup(selectedGroup)}>
+                    {t("edit")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => void saveGroupItem(togglePinned(selectedGroup))}
+                  >
+                    {selectedGroup.pinned ? t("unpin") : t("pin")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => void saveGroupItem(toggleFavorite(selectedGroup))}
+                  >
+                    {selectedGroup.favorite ? t("removeFavorite") : t("favorite")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void deleteGroup(selectedGroup)}>
+                    {t("delete")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             {selectedGroupLinks.length ? (
               <div className="space-y-3">
                 {selectedGroupLinks.map((link) => (
@@ -720,6 +999,15 @@ export default function LinksPage() {
           </div>
         ) : null}
       </Modal>
+
+      <BoardTextEditorModal
+        form={textForm}
+        onChange={setTextForm}
+        onClose={() => setTextModalOpen(false)}
+        onSave={() => void saveTextCard()}
+        open={textModalOpen}
+        title={textForm.id ? t("editText") : t("createText")}
+      />
     </div>
   );
 }
@@ -728,10 +1016,12 @@ function LinkTileCard({
   link,
   onEdit,
   onSave,
+  onDelete,
 }: {
   link: LinkItem;
   onEdit: () => void;
   onSave: (item: LinkItem) => Promise<void>;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
   let hostname: string = t("open");
@@ -773,12 +1063,7 @@ function LinkTileCard({
             <DropdownMenuItem onClick={() => void onSave(toggleFavorite(link))}>
               {link.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void onSave(toggleArchive(link))}>
-              {link.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void onSave(markDeleted(link))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       }
@@ -795,6 +1080,7 @@ function LinkFrameCard({
   isDragging,
   onEdit,
   onSave,
+  onDelete,
 }: {
   group: LinkGroup;
   linkCount: number;
@@ -802,6 +1088,7 @@ function LinkFrameCard({
   isDragging: boolean;
   onEdit: () => void;
   onSave: (item: LinkGroup) => Promise<void>;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
@@ -832,12 +1119,7 @@ function LinkFrameCard({
             <DropdownMenuItem onClick={() => void onSave(toggleFavorite(group))}>
               {group.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void onSave(toggleArchive(group))}>
-              {group.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void onSave(markDeleted(group))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       }

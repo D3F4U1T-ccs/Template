@@ -33,9 +33,7 @@ export function Topbar({ onSearchOpen }: { onSearchOpen: () => void }) {
                   ? t("dashboard")
                   : item.key === "favorites"
                     ? t("favoritesPage")
-                    : item.key === "archive"
-                      ? t("archivePage")
-                      : t(item.key);
+                    : t(item.key);
 
               return (
                 <NavLink

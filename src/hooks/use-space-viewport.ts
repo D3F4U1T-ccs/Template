@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAppData } from "@/hooks/use-app-data";
 import type { SpaceViewport, WorkspaceSpaceKey } from "@/types/models";
+import { debugSpaceEvent } from "@/utils/space-debug";
 
 const defaultViewport: SpaceViewport = {
   x: 0,
@@ -23,11 +24,22 @@ export function useSpaceViewport(space: WorkspaceSpaceKey) {
   );
   const [viewport, setViewportState] = useState<SpaceViewport>(externalViewport);
   const pendingViewportRef = useRef<SpaceViewport | null>(null);
+  const settingsRef = useRef(settings);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   const setViewport = useCallback((next: SpaceViewport) => {
     pendingViewportRef.current = next;
+    debugSpaceEvent("viewport-local", {
+      space,
+      x: next.x,
+      y: next.y,
+      zoom: next.zoom,
+    });
     setViewportState((current) => (isSameViewport(current, next) ? current : next));
-  }, []);
+  }, [space]);
 
   useEffect(() => {
     const pendingViewport = pendingViewportRef.current;
@@ -53,9 +65,16 @@ export function useSpaceViewport(space: WorkspaceSpaceKey) {
     const timeoutId = window.setTimeout(() => {
       const pendingViewport = pendingViewportRef.current ?? viewport;
 
+      debugSpaceEvent("viewport-save", {
+        space,
+        x: pendingViewport.x,
+        y: pendingViewport.y,
+        zoom: pendingViewport.zoom,
+      });
+
       void saveWorkspaceSettings({
         spaceViewports: {
-          ...(settings.spaceViewports ?? {}),
+          ...(settingsRef.current.spaceViewports ?? {}),
           [space]: pendingViewport,
         },
       });

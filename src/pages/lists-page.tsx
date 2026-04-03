@@ -4,6 +4,11 @@ import { MoreHorizontal, Plus } from "lucide-react";
 
 import { accentOptions, defaultListFeatures, listFeatureOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
+import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  BoardTextEditorModal,
+  type BoardTextFormState,
+} from "@/components/ui/board-text-editor-modal";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
 import { Modal } from "@/components/ui/modal";
 import { Badge, EmptyState, Field, Input, Select, Textarea } from "@/components/ui/primitives";
@@ -18,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import type {
+  BoardTextItem,
   ListFeatureConfig,
   SmartList,
   SmartListItem,
@@ -26,20 +32,34 @@ import type {
 import {
   filterActive,
   getSpacePlacement,
-  markDeleted,
   moveEntity,
   nextOrder,
   setSpacePlacement,
-  toggleArchive,
   toggleFavorite,
   togglePinned,
   upsertEntity,
 } from "@/utils/entity";
+import {
+  DEFAULT_TEXT_SIZE,
+  DEFAULT_TEXT_STYLE,
+  LIST_FRAME_LAYOUT,
+  createContainerPlacement,
+  ensureEntityCenteredInSpace,
+  ensureShortcutBoardPlacements,
+} from "@/utils/board";
 import { createGridPlacement, getPlacementOverlapRatio } from "@/utils/space";
 
 const LISTS_SPACE: WorkspaceSpaceKey = "lists-board";
 const FRAME_MIN_WIDTH = 420;
 const FRAME_MIN_HEIGHT = 280;
+const FRAME_DEFAULT_SIZE = {
+  width: 740,
+  height: 420,
+};
+const LIST_ITEM_SIZE = {
+  width: 184,
+  height: 152,
+};
 
 type ListBoardNodeData =
   | {
@@ -50,6 +70,10 @@ type ListBoardNodeData =
       kind: "item";
       item: SmartListItem;
       list: SmartList | null;
+    }
+  | {
+      kind: "text";
+      text: BoardTextItem;
     };
 
 const emptyListForm = {
@@ -83,16 +107,28 @@ const emptyItemForm = {
   tags: "",
 };
 
+const emptyTextForm: BoardTextFormState = {
+  id: "",
+  content: "",
+  fontFamily: DEFAULT_TEXT_STYLE.fontFamily,
+  fontSize: DEFAULT_TEXT_STYLE.fontSize,
+  textColor: DEFAULT_TEXT_STYLE.textColor,
+  tone: DEFAULT_TEXT_STYLE.tone,
+  cornerRadius: 26,
+};
+
 export default function ListsPage() {
   const navigate = useNavigate();
   const { listId } = useParams();
-  const { collections, saveItem, saveMany } = useAppData();
+  const { collections, hardDelete, saveItem, saveMany, settings } = useAppData();
   const { viewport, setViewport } = useSpaceViewport(LISTS_SPACE);
   const { t } = useI18n();
   const [listModalOpen, setListModalOpen] = useState(false);
   const [itemModalOpen, setItemModalOpen] = useState(false);
+  const [textModalOpen, setTextModalOpen] = useState(false);
   const [listForm, setListForm] = useState(emptyListForm);
   const [itemForm, setItemForm] = useState(emptyItemForm);
+  const [textForm, setTextForm] = useState(emptyTextForm);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const listFeatureCopy = useMemo(
     () => ({
@@ -144,10 +180,6 @@ export default function ListsPage() {
         label: t("listFeatureNotes"),
         description: t("listFeatureNotesText"),
       },
-      archive: {
-        label: t("listFeatureArchive"),
-        description: t("listFeatureArchiveText"),
-      },
       favorite: {
         label: t("listFeatureFavorite"),
         description: t("listFeatureFavoriteText"),
@@ -167,6 +199,11 @@ export default function ListsPage() {
   const activeItems = useMemo(
     () => filterActive(collections.listItems).filter((item) => !item.archivedAt),
     [collections.listItems]
+  );
+  const boardTexts = useMemo(
+    () =>
+      filterActive(collections.boardTexts).filter((item) => item.space === LISTS_SPACE),
+    [collections.boardTexts]
   );
 
   const selectedList = useMemo(
@@ -190,8 +227,8 @@ export default function ListsPage() {
           createGridPlacement(index, {
             startX: 120,
             startY: 120,
-            width: 740,
-            height: 420,
+            width: FRAME_DEFAULT_SIZE.width,
+            height: FRAME_DEFAULT_SIZE.height,
             gapX: 52,
             gapY: 52,
             columns: 2,
@@ -227,8 +264,8 @@ export default function ListsPage() {
         createGridPlacement(0, {
           startX: 120,
           startY: 120,
-          width: 740,
-          height: 420,
+          width: FRAME_DEFAULT_SIZE.width,
+          height: FRAME_DEFAULT_SIZE.height,
           gapX: 52,
           gapY: 52,
           columns: 2,
@@ -259,8 +296,8 @@ export default function ListsPage() {
           createGridPlacement(0, {
             startX: 120,
             startY: 120,
-            width: 740,
-            height: 420,
+            width: FRAME_DEFAULT_SIZE.width,
+            height: FRAME_DEFAULT_SIZE.height,
             gapX: 52,
             gapY: 52,
             columns: 2,
@@ -268,17 +305,17 @@ export default function ListsPage() {
         : null;
 
       const fallbackPlacement = parentList && parentFramePlacement
-        ? {
-            x: parentFramePlacement.x + 28 + (siblingIndex % 3) * 212,
-            y: parentFramePlacement.y + 72 + Math.floor(siblingIndex / 3) * 184,
-            width: 184,
-            height: 152,
-          }
+        ? createContainerPlacement(
+            parentFramePlacement,
+            siblingIndex,
+            LIST_ITEM_SIZE,
+            LIST_FRAME_LAYOUT
+          ).placement
         : createGridPlacement(index, {
             startX: 1260,
             startY: 140,
-            width: 184,
-            height: 152,
+            width: LIST_ITEM_SIZE.width,
+            height: LIST_ITEM_SIZE.height,
             columns: 4,
             gapX: 24,
             gapY: 24,
@@ -296,8 +333,35 @@ export default function ListsPage() {
       };
     });
 
-    return [...frameNodes, ...itemNodes];
-  }, [activeItems, framePlacements, lists]);
+    const textNodes: Array<SpaceCanvasNode<ListBoardNodeData>> = boardTexts.map((text, index) => ({
+      id: `text-${text.id}`,
+      data: {
+        kind: "text",
+        text,
+      },
+      placement: getSpacePlacement(
+        text,
+        LISTS_SPACE,
+        createGridPlacement(index, {
+          startX: 940,
+          startY: 120,
+          width: DEFAULT_TEXT_SIZE.width,
+          height: DEFAULT_TEXT_SIZE.height,
+          columns: 2,
+          gapX: 28,
+          gapY: 28,
+        })
+      ),
+      resizable: true,
+      minSize: {
+        width: 220,
+        height: 120,
+      },
+      zIndex: 24,
+    }));
+
+    return [...frameNodes, ...itemNodes, ...textNodes];
+  }, [activeItems, boardTexts, framePlacements, lists]);
 
   function openCreateList() {
     setListForm({
@@ -330,6 +394,24 @@ export default function ListsPage() {
     setItemModalOpen(true);
   }
 
+  function openCreateText() {
+    setTextForm(emptyTextForm);
+    setTextModalOpen(true);
+  }
+
+  function openEditText(text: BoardTextItem) {
+    setTextForm({
+      id: text.id,
+      content: text.content,
+      fontFamily: text.fontFamily,
+      fontSize: text.fontSize,
+      textColor: text.textColor,
+      tone: text.tone,
+      cornerRadius: text.cornerRadius,
+    });
+    setTextModalOpen(true);
+  }
+
   function openEditItem(item: SmartListItem) {
     setItemForm({
       id: item.id,
@@ -355,7 +437,7 @@ export default function ListsPage() {
 
   async function saveListEntry() {
     const current = collections.lists.find((item) => item.id === listForm.id);
-    const nextList = upsertEntity<SmartList>(
+    let nextList = upsertEntity<SmartList>(
       current,
       {
         title: listForm.title.trim() || t("untitledFrame"),
@@ -369,6 +451,17 @@ export default function ListsPage() {
       current?.order ?? nextOrder(collections.lists)
     );
 
+    nextList = ensureShortcutBoardPlacements(nextList, settings, FRAME_DEFAULT_SIZE);
+
+    if (!nextList.spacePlacements?.[LISTS_SPACE]) {
+      nextList = ensureEntityCenteredInSpace(
+        nextList,
+        LISTS_SPACE,
+        viewport,
+        FRAME_DEFAULT_SIZE
+      );
+    }
+
     await saveItem("lists", nextList);
     setListModalOpen(false);
     navigate(`/lists/${nextList.id}`);
@@ -381,7 +474,7 @@ export default function ListsPage() {
       return;
     }
 
-    const nextItem = upsertEntity<SmartListItem>(
+    let nextItem = upsertEntity<SmartListItem>(
       current,
       {
         title: itemForm.title.trim() || t("untitledItem"),
@@ -404,8 +497,84 @@ export default function ListsPage() {
       current?.order ?? nextOrder(collections.listItems)
     );
 
-    await saveItem("listItems", nextItem);
+    nextItem = ensureShortcutBoardPlacements(nextItem, settings, LIST_ITEM_SIZE);
+    const targetList = lists.find((list) => list.id === nextItem.listId) ?? null;
+
+    if (targetList && (!current || current.listId !== nextItem.listId)) {
+      const targetPlacement =
+        framePlacements.get(targetList.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: FRAME_DEFAULT_SIZE.width,
+          height: FRAME_DEFAULT_SIZE.height,
+          gapX: 52,
+          gapY: 52,
+          columns: 2,
+        });
+      const siblingCount = activeItems.filter(
+        (item) => item.listId === targetList.id && item.id !== nextItem.id
+      ).length;
+      const { container, placement } = createContainerPlacement(
+        targetPlacement,
+        siblingCount,
+        LIST_ITEM_SIZE,
+        LIST_FRAME_LAYOUT
+      );
+
+      nextItem = setSpacePlacement(nextItem, LISTS_SPACE, placement);
+
+      await Promise.all([
+        saveItem("listItems", nextItem),
+        container.width !== targetPlacement.width || container.height !== targetPlacement.height
+          ? saveItem("lists", setSpacePlacement(targetList, LISTS_SPACE, container))
+          : Promise.resolve(),
+      ]);
+    } else {
+      if (!nextItem.spacePlacements?.[LISTS_SPACE] && !nextItem.listId) {
+        nextItem = ensureEntityCenteredInSpace(
+          nextItem,
+          LISTS_SPACE,
+          viewport,
+          LIST_ITEM_SIZE
+        );
+      }
+
+      await saveItem("listItems", nextItem);
+    }
+
     setItemModalOpen(false);
+  }
+
+  async function saveTextCard() {
+    const current = collections.boardTexts.find((item) => item.id === textForm.id);
+    let nextText = upsertEntity<BoardTextItem>(
+      current,
+      {
+        title: "",
+        description: "",
+        space: LISTS_SPACE,
+        content: textForm.content,
+        fontFamily: textForm.fontFamily,
+        fontSize: textForm.fontSize,
+        textColor: textForm.textColor,
+        tone: textForm.tone,
+        cornerRadius: textForm.cornerRadius,
+      },
+      current?.order ?? nextOrder(collections.boardTexts)
+    );
+
+    if (!nextText.spacePlacements?.[LISTS_SPACE]) {
+      nextText = ensureEntityCenteredInSpace(
+        nextText,
+        LISTS_SPACE,
+        viewport,
+        DEFAULT_TEXT_SIZE
+      );
+    }
+
+    await saveItem("boardTexts", nextText);
+    setTextModalOpen(false);
   }
 
   async function handleItemDrop(overId: string) {
@@ -505,11 +674,16 @@ export default function ListsPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20">
+      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
         <div className="pointer-events-auto">
           <Button className="gap-2 rounded-full" onClick={openCreateList}>
             <Plus className="h-4 w-4" />
             {t("createList")}
+          </Button>
+        </div>
+        <div className="pointer-events-auto">
+          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+            {t("createText")}
           </Button>
         </div>
       </div>
@@ -531,6 +705,11 @@ export default function ListsPage() {
         onNodeClick={(node) => {
           if (node.data.kind === "frame") {
             navigate(`/lists/${node.data.list.id}`);
+            return;
+          }
+
+          if (node.data.kind === "text") {
+            openEditText(node.data.text);
             return;
           }
 
@@ -561,6 +740,11 @@ export default function ListsPage() {
             return;
           }
 
+          if (node.data.kind === "text") {
+            void saveItem("boardTexts", setSpacePlacement(node.data.text, LISTS_SPACE, placement));
+            return;
+          }
+
           void handleItemPlacementCommit(node.data.item, placement);
         }}
         onViewportChange={setViewport}
@@ -576,7 +760,57 @@ export default function ListsPage() {
                 placementWidth={node.placement.width}
                 onEdit={() => openEditList(frame)}
                 onOpen={() => navigate(`/lists/${frame.id}`)}
-                onSave={(item) => void saveItem("lists", item)}
+                onDelete={() =>
+                  void Promise.all([
+                    saveMany(
+                      "listItems",
+                      collections.listItems.filter((item) => item.listId !== frame.id)
+                    ),
+                    hardDelete("lists", frame.id),
+                  ])
+                }
+                onSave={(item) =>
+                  void saveItem(
+                    "lists",
+                    ensureShortcutBoardPlacements(item, settings, FRAME_DEFAULT_SIZE)
+                  )
+                }
+              />
+            );
+          }
+
+          if (node.data.kind === "text") {
+            const textNode = node.data;
+
+            return (
+              <BoardTextCard
+                className="cursor-grab active:cursor-grabbing"
+                item={textNode.text}
+                menu={
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        data-space-no-drag="true"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        size="icon"
+                        variant="ghost"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEditText(textNode.text)}>
+                        {t("editText")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void hardDelete("boardTexts", textNode.text.id)}
+                      >
+                        {t("delete")}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                }
               />
             );
           }
@@ -588,8 +822,14 @@ export default function ListsPage() {
               isLinkedDragging={options.isLinkedDragging}
               item={itemNode.item}
               list={itemNode.list}
+              onDelete={() => void hardDelete("listItems", itemNode.item.id)}
               onEdit={() => openEditItem(itemNode.item)}
-              onSave={(item) => void saveItem("listItems", item)}
+              onSave={(item) =>
+                void saveItem(
+                  "listItems",
+                  ensureShortcutBoardPlacements(item, settings, LIST_ITEM_SIZE)
+                )
+              }
             />
           );
         }}
@@ -986,10 +1226,7 @@ export default function ListsPage() {
                           <DropdownMenuItem onClick={() => void saveItem("listItems", toggleFavorite(item))}>
                             {item.favorite ? t("removeFavorite") : t("favorite")}
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void saveItem("listItems", toggleArchive(item))}>
-                            {item.archivedAt ? t("restore") : t("archive")}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void saveItem("listItems", markDeleted(item))}>
+                          <DropdownMenuItem onClick={() => void hardDelete("listItems", item.id)}>
                             {t("delete")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -1012,6 +1249,15 @@ export default function ListsPage() {
           </div>
         ) : null}
       </Modal>
+
+      <BoardTextEditorModal
+        form={textForm}
+        onChange={setTextForm}
+        onClose={() => setTextModalOpen(false)}
+        onSave={() => void saveTextCard()}
+        open={textModalOpen}
+        title={textForm.id ? t("editText") : t("createText")}
+      />
     </div>
   );
 }
@@ -1024,6 +1270,7 @@ function ListFrameCard({
   onOpen,
   onEdit,
   onSave,
+  onDelete,
 }: {
   list: SmartList;
   itemCount: number;
@@ -1032,6 +1279,7 @@ function ListFrameCard({
   onOpen: () => void;
   onEdit: () => void;
   onSave: (item: SmartList) => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
@@ -1063,12 +1311,7 @@ function ListFrameCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(list))}>
               {list.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(list))}>
-              {list.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(list))}>
-              {t("delete")}
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       }
@@ -1085,12 +1328,14 @@ function ListItemBoardCard({
   isLinkedDragging,
   onEdit,
   onSave,
+  onDelete,
 }: {
   item: SmartListItem;
   list: SmartList | null;
   isLinkedDragging: boolean;
   onEdit: () => void;
   onSave: (item: SmartListItem) => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
@@ -1129,10 +1374,7 @@ function ListItemBoardCard({
             <DropdownMenuItem onClick={() => onSave(toggleFavorite(item))}>
               {item.favorite ? t("removeFavorite") : t("favorite")}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(toggleArchive(item))}>
-              {item.archivedAt ? t("restore") : t("archive")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onSave(markDeleted(item))}>{t("delete")}</DropdownMenuItem>
+            <DropdownMenuItem onClick={onDelete}>{t("delete")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

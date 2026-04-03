@@ -17,7 +17,6 @@ const TasksPage = lazy(() => import("@/pages/tasks-page"));
 const ListsPage = lazy(() => import("@/pages/lists-page"));
 const NotesPage = lazy(() => import("@/pages/notes-page"));
 const FavoritesPage = lazy(() => import("@/pages/favorites-page"));
-const ArchivePage = lazy(() => import("@/pages/archive-page"));
 
 function LoadingScreen({ label }: { label: string }) {
   return (
@@ -85,7 +84,6 @@ function WorkspaceRoutes() {
           <Route path="/notes" element={<NotesPage />} />
           <Route path="/notes/:noteId" element={<NotesPage />} />
           <Route path="/favorites" element={<FavoritesPage />} />
-          <Route path="/archive" element={<ArchivePage />} />
           <Route path="*" element={<Navigate replace to={`/${defaultPage}`} />} />
         </Routes>
       </Suspense>

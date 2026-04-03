@@ -34,6 +34,8 @@ import { nowIso, sortByOrder } from "@/utils/entity";
 type WorkspaceContextValue = {
   mode: "firebase" | "local";
   collections: {
+    dashboardGroups: CollectionMap["dashboardGroups"][];
+    boardTexts: CollectionMap["boardTexts"][];
     links: CollectionMap["links"][];
     linkGroups: CollectionMap["linkGroups"][];
     taskGroups: CollectionMap["taskGroups"][];
@@ -123,6 +125,16 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const { user, mode } = useAuth();
   const userId = user?.uid;
 
+  const dashboardGroupsState = useCollectionState<CollectionMap["dashboardGroups"]>(
+    "dashboardGroups",
+    userId,
+    mode
+  );
+  const boardTextsState = useCollectionState<CollectionMap["boardTexts"]>(
+    "boardTexts",
+    userId,
+    mode
+  );
   const linksState = useCollectionState<CollectionMap["links"]>("links", userId, mode);
   const linkGroupsState = useCollectionState<CollectionMap["linkGroups"]>(
     "linkGroups",
@@ -168,6 +180,30 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const applySingleItemUpdate = useCallback(
     <K extends CollectionName>(collectionName: K, item: CollectionMap[K]) => {
       switch (collectionName) {
+        case "dashboardGroups":
+          dashboardGroupsState.setItems((current) =>
+            sortByOrder(
+              current.some((entry) => entry.id === item.id)
+                ? current.map((entry) =>
+                    entry.id === item.id
+                      ? (item as CollectionMap["dashboardGroups"])
+                      : entry
+                  )
+                : [...current, item as CollectionMap["dashboardGroups"]]
+            )
+          );
+          return;
+        case "boardTexts":
+          boardTextsState.setItems((current) =>
+            sortByOrder(
+              current.some((entry) => entry.id === item.id)
+                ? current.map((entry) =>
+                    entry.id === item.id ? (item as CollectionMap["boardTexts"]) : entry
+                  )
+                : [...current, item as CollectionMap["boardTexts"]]
+            )
+          );
+          return;
         case "links":
           linksState.setItems((current) =>
             sortByOrder(
@@ -292,6 +328,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      boardTextsState,
+      dashboardGroupsState,
       fileGroupsState,
       filesState,
       linkGroupsState,
@@ -309,6 +347,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const replaceCollectionItems = useCallback(
     <K extends CollectionName>(collectionName: K, items: CollectionMap[K][]) => {
       switch (collectionName) {
+        case "dashboardGroups":
+          dashboardGroupsState.setItems(
+            sortByOrder(items as CollectionMap["dashboardGroups"][])
+          );
+          return;
+        case "boardTexts":
+          boardTextsState.setItems(sortByOrder(items as CollectionMap["boardTexts"][]));
+          return;
         case "links":
           linksState.setItems(sortByOrder(items as CollectionMap["links"][]));
           return;
@@ -345,6 +391,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      boardTextsState,
+      dashboardGroupsState,
       fileGroupsState,
       filesState,
       linkGroupsState,
@@ -442,6 +490,82 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     ]
   );
 
+  const collectionsLoading =
+    dashboardGroupsState.loading ||
+    boardTextsState.loading ||
+    linksState.loading ||
+    linkGroupsState.loading ||
+    taskGroupsState.loading ||
+    tasksState.loading ||
+    listsState.loading ||
+    listItemsState.loading ||
+    noteGroupsState.loading ||
+    notesState.loading ||
+    filesState.loading ||
+    fileGroupsState.loading ||
+    portfolioState.loading;
+
+  const cleanupUserRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!userId) {
+      cleanupUserRef.current = null;
+      return;
+    }
+
+    if (collectionsLoading || cleanupUserRef.current === userId) {
+      return;
+    }
+
+    cleanupUserRef.current = userId;
+
+    const cleanupTargets = [
+      ["dashboardGroups", dashboardGroupsState.items],
+      ["boardTexts", boardTextsState.items],
+      ["links", linksState.items],
+      ["linkGroups", linkGroupsState.items],
+      ["taskGroups", taskGroupsState.items],
+      ["tasks", tasksState.items],
+      ["lists", listsState.items],
+      ["listItems", listItemsState.items],
+      ["noteGroups", noteGroupsState.items],
+      ["notes", notesState.items],
+      ["files", filesState.items],
+      ["fileGroups", fileGroupsState.items],
+      ["portfolio", portfolioState.items],
+    ] as const satisfies Array<[CollectionName, BaseEntity[]]>;
+
+    const jobs = cleanupTargets
+      .filter(([, items]) => items.some((item) => item.deletedAt || item.archivedAt))
+      .map(([collectionName, items]) =>
+        saveMany(
+          collectionName,
+          items.filter((item) => !item.deletedAt && !item.archivedAt) as never[]
+        )
+      );
+
+    if (jobs.length) {
+      void Promise.all(jobs);
+    }
+  }, [
+    boardTextsState.items,
+    dashboardGroupsState.items,
+    fileGroupsState.items,
+    filesState.items,
+    linkGroupsState.items,
+    linksState.items,
+    listItemsState.items,
+    listsState.items,
+    collectionsLoading,
+    noteGroupsState.items,
+    notesState.items,
+    portfolioState.items,
+    saveMany,
+    taskGroupsState.items,
+    tasksState.items,
+    userId,
+  ]);
+
   const hardDelete = useCallback(
     async <K extends CollectionName>(collectionName: K, id: string) => {
       if (!userId) {
@@ -514,6 +638,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const collections = useMemo(
     () => ({
+      dashboardGroups: dashboardGroupsState.items,
+      boardTexts: boardTextsState.items,
       links: linksState.items,
       linkGroups: linkGroupsState.items,
       taskGroups: taskGroupsState.items,
@@ -527,6 +653,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       portfolio: portfolioState.items,
     }),
     [
+      boardTextsState.items,
+      dashboardGroupsState.items,
       fileGroupsState.items,
       filesState.items,
       linkGroupsState.items,
@@ -545,6 +673,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const payload: WorkspaceExport = {
       version: 1,
       exportedAt: nowIso(),
+      dashboardGroups: collections.dashboardGroups,
+      boardTexts: collections.boardTexts,
       links: collections.links,
       linkGroups: collections.linkGroups,
       taskGroups: collections.taskGroups,
@@ -572,6 +702,18 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       const payload = JSON.parse(raw) as Partial<WorkspaceExport>;
 
       await Promise.all([
+        saveManyCollectionItems({
+          mode,
+          userId,
+          collectionName: "dashboardGroups",
+          items: Array.isArray(payload.dashboardGroups) ? payload.dashboardGroups : [],
+        }),
+        saveManyCollectionItems({
+          mode,
+          userId,
+          collectionName: "boardTexts",
+          items: Array.isArray(payload.boardTexts) ? payload.boardTexts : [],
+        }),
         saveManyCollectionItems({
           mode,
           userId,
@@ -664,21 +806,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     });
   }, [mode, userId]);
 
-  const loading =
-    linksState.loading ||
-    linkGroupsState.loading ||
-    taskGroupsState.loading ||
-    tasksState.loading ||
-    listsState.loading ||
-    listItemsState.loading ||
-    noteGroupsState.loading ||
-    notesState.loading ||
-    filesState.loading ||
-    fileGroupsState.loading ||
-    portfolioState.loading ||
-    settingsLoading;
+  const loading = collectionsLoading || settingsLoading;
 
   const error =
+    dashboardGroupsState.error ??
+    boardTextsState.error ??
     linksState.error ??
     linkGroupsState.error ??
     taskGroupsState.error ??

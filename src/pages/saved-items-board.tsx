@@ -18,15 +18,13 @@ import {
 import type { CollectionMap, WorkspaceSpaceKey } from "@/types/models";
 import {
   getSpacePlacement,
-  markDeleted,
   setSpacePlacement,
-  toggleArchive,
   toggleFavorite,
 } from "@/utils/entity";
 import { normalizeUrl } from "@/utils/files";
 import { createGridPlacement } from "@/utils/space";
 
-type SavedMode = "favorites" | "archive";
+type SavedMode = "favorites";
 
 type SavedItem = {
   id: string;
@@ -64,7 +62,6 @@ type SavedItem = {
 };
 
 const FAVORITES_SPACE: WorkspaceSpaceKey = "favorites-board";
-const ARCHIVE_SPACE: WorkspaceSpaceKey = "archive-board";
 
 function openSavedItem(item: SavedItem, navigate: ReturnType<typeof useNavigate>) {
   if (item.action.type === "external") {
@@ -77,16 +74,12 @@ function openSavedItem(item: SavedItem, navigate: ReturnType<typeof useNavigate>
 
 function buildSavedItems(
   collections: ReturnType<typeof useAppData>["collections"],
-  t: ReturnType<typeof useI18n>["t"],
-  mode: SavedMode
+  t: ReturnType<typeof useI18n>["t"]
 ) {
-  const includeFavorite = mode === "favorites";
-
   const matches = <T extends { favorite: boolean; archivedAt: string | null; deletedAt: string | null }>(
     item: T
   ) =>
-    !item.deletedAt &&
-    (includeFavorite ? item.favorite && !item.archivedAt : !!item.archivedAt);
+    !item.deletedAt && !item.archivedAt && item.favorite;
 
   return [
     ...collections.links.filter(matches).map((item) => ({
@@ -191,17 +184,14 @@ function buildSavedItems(
   ] satisfies SavedItem[];
 }
 
-export function SavedItemsBoard({ mode }: { mode: SavedMode }) {
+export function SavedItemsBoard({ mode: _mode }: { mode: SavedMode }) {
   const navigate = useNavigate();
-  const { collections, saveItem } = useAppData();
+  const { collections, hardDelete, saveItem } = useAppData();
   const { t } = useI18n();
-  const space = mode === "favorites" ? FAVORITES_SPACE : ARCHIVE_SPACE;
+  const space = FAVORITES_SPACE;
   const { viewport, setViewport } = useSpaceViewport(space);
 
-  const items = useMemo(
-    () => buildSavedItems(collections, t, mode),
-    [collections, mode, t]
-  );
+  const items = useMemo(() => buildSavedItems(collections, t), [collections, t]);
 
   const nodes = useMemo<Array<SpaceCanvasNode<SavedItem>>>(
     () =>
@@ -228,7 +218,7 @@ export function SavedItemsBoard({ mode }: { mode: SavedMode }) {
       className="h-full min-h-0 rounded-none border-0 shadow-none"
       emptyState={
         <EmptyState
-          description={mode === "favorites" ? t("favoritesEmpty") : t("archiveEmpty")}
+          description={t("favoritesEmpty")}
           title=""
         />
       }
@@ -273,45 +263,15 @@ export function SavedItemsBoard({ mode }: { mode: SavedMode }) {
                   <DropdownMenuItem onClick={() => openSavedItem(item, navigate)}>
                     {t("open")}
                   </DropdownMenuItem>
-                  {mode === "favorites" ? (
-                    <>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          void saveItem(item.collectionName, toggleFavorite(item.entity) as never)
-                        }
-                      >
-                        {t("removeFavorite")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          void saveItem(item.collectionName, toggleArchive(item.entity) as never)
-                        }
-                      >
-                        {t("archive")}
-                      </DropdownMenuItem>
-                    </>
-                  ) : (
-                    <>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          void saveItem(item.collectionName, toggleArchive(item.entity) as never)
-                        }
-                      >
-                        {t("restore")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          void saveItem(item.collectionName, toggleFavorite(item.entity) as never)
-                        }
-                      >
-                        {item.entity.favorite ? t("removeFavorite") : t("favorite")}
-                      </DropdownMenuItem>
-                    </>
-                  )}
                   <DropdownMenuItem
                     onClick={() =>
-                      void saveItem(item.collectionName, markDeleted(item.entity) as never)
+                      void saveItem(item.collectionName, toggleFavorite(item.entity) as never)
                     }
+                  >
+                    {t("removeFavorite")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => void hardDelete(item.collectionName, item.entity.id)}
                   >
                     {t("delete")}
                   </DropdownMenuItem>

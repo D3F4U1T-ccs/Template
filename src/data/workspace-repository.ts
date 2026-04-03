@@ -15,15 +15,19 @@ import {
   defaultListFeatures,
   defaultSettings,
 } from "@/data/app-config";
+import { SPACE_ZOOM_MAX, SPACE_ZOOM_MIN } from "@/utils/space";
 import { getFirebaseServices } from "@/data/firebase";
 import { LIST_FEATURE_KEYS } from "@/types/models";
 import type {
   AppPageKey,
   AppSettings,
   BaseEntity,
+  BoardTextItem,
+  BoardTextTone,
   CanvasPattern,
   CollectionMap,
   CollectionName,
+  DashboardGroup,
   FileGroup,
   FileItem,
   FileSourceType,
@@ -56,7 +60,6 @@ const SPACE_KEYS: WorkspaceSpaceKey[] = [
   "lists-board",
   "notes-board",
   "favorites-board",
-  "archive-board",
 ];
 const PAGE_KEYS: AppPageKey[] = [
   "dashboard",
@@ -65,7 +68,6 @@ const PAGE_KEYS: AppPageKey[] = [
   "lists",
   "notes",
   "favorites",
-  "archive",
 ];
 const THEME_MODES: ThemeMode[] = ["system", "dark", "light"];
 const LANGUAGE_CODES: LanguageCode[] = ["ru", "en"];
@@ -82,6 +84,7 @@ const TASK_STATUSES = ["todo", "in-progress", "done"] as const;
 const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 const TASK_TYPES = ["day", "week", "month", "someday", "recurring"] as const;
 const REPEAT_RULES = ["none", "daily", "weekly", "monthly"] as const;
+const BOARD_TEXT_TONES: BoardTextTone[] = ["plain", "soft"];
 
 function collectionPath(userId: string, collectionName: CollectionName) {
   return `users/${userId}/${collectionName}`;
@@ -204,7 +207,7 @@ function normalizeViewport(value: unknown): SpaceViewport | undefined {
   return {
     x,
     y,
-    zoom: Math.min(Math.max(zoom, 0.55), 1.9),
+    zoom: Math.min(Math.max(zoom, SPACE_ZOOM_MIN), SPACE_ZOOM_MAX),
   };
 }
 
@@ -254,10 +257,21 @@ function normalizeBaseEntity(id: string, value: unknown): BaseEntity {
     favorite: readBoolean(record, "favorite"),
     archivedAt: readNullableString(record, "archivedAt"),
     deletedAt: readNullableString(record, "deletedAt"),
+    dashboardGroupId: readNullableString(record, "dashboardGroupId"),
     order: readNumber(record, "order", 1),
     tags: readStringArray(record, "tags"),
     lastViewedAt: readNullableString(record, "lastViewedAt"),
     spacePlacements: normalizePlacementMap(record.spacePlacements),
+  };
+}
+
+function normalizeDashboardGroup(id: string, value: unknown): DashboardGroup {
+  const record = asRecord(value);
+
+  return {
+    ...normalizeBaseEntity(id, value),
+    accent: readString(record, "accent", "from-cyan-500/30 to-blue-500/10"),
+    coverUrl: readString(record, "coverUrl"),
   };
 }
 
@@ -364,6 +378,20 @@ function normalizeNoteDocument(id: string, value: unknown): NoteDocument {
   };
 }
 
+function normalizeBoardTextItem(id: string, value: unknown): BoardTextItem {
+  const record = asRecord(value);
+
+  return {
+    ...normalizeBaseEntity(id, value),
+    space: readEnumValue(record.space, SPACE_KEYS, "dashboard-board"),
+    content: readString(record, "content"),
+    fontFamily: readString(record, "fontFamily", "\"Sora\", \"Trebuchet MS\", sans-serif"),
+    fontSize: Math.min(Math.max(readNumber(record, "fontSize", 28), 14), 72),
+    textColor: readString(record, "textColor", "#f8fafc"),
+    tone: readEnumValue(record.tone, BOARD_TEXT_TONES, "soft"),
+  };
+}
+
 function normalizeNoteGroup(id: string, value: unknown): NoteGroup {
   const record = asRecord(value);
 
@@ -418,6 +446,10 @@ function normalizeCollectionItem<K extends CollectionName>(
   value: unknown
 ): CollectionMap[K] {
   switch (collectionName) {
+    case "dashboardGroups":
+      return normalizeDashboardGroup(id, value) as CollectionMap[K];
+    case "boardTexts":
+      return normalizeBoardTextItem(id, value) as CollectionMap[K];
     case "links":
       return normalizeLinkItem(id, value) as CollectionMap[K];
     case "linkGroups":

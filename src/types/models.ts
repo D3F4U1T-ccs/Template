@@ -9,7 +9,6 @@ export type AppPageKey =
   | "lists"
   | "notes"
   | "favorites"
-  | "archive"
   | "files"
   | "portfolio"
   | "settings";
@@ -21,8 +20,7 @@ export type WorkspaceSpaceKey =
   | "tasks-board"
   | "lists-board"
   | "notes-board"
-  | "favorites-board"
-  | "archive-board";
+  | "favorites-board";
 
 export interface SpacePlacement {
   x: number;
@@ -51,10 +49,16 @@ export interface BaseEntity {
   favorite: boolean;
   archivedAt: string | null;
   deletedAt: string | null;
+  dashboardGroupId?: string | null;
   order: number;
   tags: string[];
   lastViewedAt: string | null;
   spacePlacements?: SpacePlacementMap;
+}
+
+export interface DashboardGroup extends BaseEntity {
+  accent: string;
+  coverUrl: string;
 }
 
 export interface LinkGroup extends BaseEntity {
@@ -104,7 +108,6 @@ export const LIST_FEATURE_KEYS = [
   "sortCheckedToBottom",
   "tags",
   "notes",
-  "archive",
   "favorite",
   "check",
 ] as const;
@@ -145,6 +148,17 @@ export interface NoteDocument extends BaseEntity {
   content: string;
 }
 
+export type BoardTextTone = "plain" | "soft";
+
+export interface BoardTextItem extends BaseEntity {
+  space: WorkspaceSpaceKey;
+  content: string;
+  fontFamily: string;
+  fontSize: number;
+  textColor: string;
+  tone: BoardTextTone;
+}
+
 export interface FileGroup extends BaseEntity {
   collapsed: boolean;
   accent: string;
@@ -173,6 +187,8 @@ export interface PortfolioItem extends BaseEntity {
 }
 
 export type CollectionName =
+  | "dashboardGroups"
+  | "boardTexts"
   | "links"
   | "linkGroups"
   | "taskGroups"
@@ -186,6 +202,8 @@ export type CollectionName =
   | "portfolio";
 
 export interface CollectionMap {
+  dashboardGroups: DashboardGroup;
+  boardTexts: BoardTextItem;
   links: LinkItem;
   linkGroups: LinkGroup;
   taskGroups: TaskGroup;
@@ -220,6 +238,8 @@ export interface UserSession {
 export interface WorkspaceExport {
   version: number;
   exportedAt: string;
+  dashboardGroups: DashboardGroup[];
+  boardTexts: BoardTextItem[];
   links: LinkItem[];
   linkGroups: LinkGroup[];
   taskGroups: TaskGroup[];
