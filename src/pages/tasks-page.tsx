@@ -1,10 +1,15 @@
 import { useMemo, useState } from "react";
-import { Check, MoreHorizontal, Plus } from "lucide-react";
+import { Check, MoreHorizontal, PencilLine, Plus, Rows3, Trash2 } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
 import { Modal } from "@/components/ui/modal";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -54,7 +59,7 @@ import {
 import {
   createGridPlacement,
   createViewportCenteredOnPlacement,
-  getPlacementOverlapRatio,
+  getInnermostContainingEntry,
 } from "@/utils/space";
 import { formatDate } from "@/utils/date";
 
@@ -121,6 +126,7 @@ export default function TasksPage() {
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
   const [taskForm, setTaskForm] = useState(emptyTaskForm);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
 
@@ -430,6 +436,236 @@ export default function TasksPage() {
     [nodes, t, taskPriorityLabels]
   );
 
+  const getSidePanelGroupId = (groupId: string) => `group-${groupId}`;
+
+  const sidePanelItems: Array<SpaceSidePanelItem> = [
+      ...[...groups]
+        .sort((left, right) => left.order - right.order)
+        .map((group) => ({
+          id: getSidePanelGroupId(group.id),
+          parentId: group.parentGroupId ? getSidePanelGroupId(group.parentGroupId) : null,
+          title: group.title,
+          subtitle: group.description || t("tasks"),
+          kind: "group" as const,
+          accentClassName: group.accent,
+          draggable: true,
+          actions: [
+            {
+              id: `edit-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditGroup(group);
+              },
+            },
+            {
+              id: `pin-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "taskGroups",
+                  ensureShortcutBoardPlacements(
+                    togglePinned(group),
+                    settings,
+                    GROUP_DEFAULT_SIZE
+                  )
+                );
+              },
+            },
+            {
+              id: `favorite-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "taskGroups",
+                  ensureShortcutBoardPlacements(
+                    toggleFavorite(group),
+                    settings,
+                    GROUP_DEFAULT_SIZE
+                  )
+                );
+              },
+            },
+            {
+              id: `delete-group-${group.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void deleteGroup(group);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+      ...[...tasks]
+        .sort((left, right) => left.order - right.order)
+        .map((task) => ({
+          id: `task-${task.id}`,
+          parentId: task.groupId ? getSidePanelGroupId(task.groupId) : null,
+          title: task.title,
+          subtitle: task.description || taskPriorityLabels[task.priority],
+          kind: "item" as const,
+          draggable: true,
+          onClick: () => {
+            openEditTask(task);
+          },
+          actions: [
+            {
+              id: `complete-task-${task.id}`,
+              icon: <Check className="h-4 w-4" />,
+              label: t("fieldChecked"),
+              onClick: () => {
+                void completeTask(task);
+              },
+            },
+            {
+              id: `pin-task-${task.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: task.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "tasks",
+                  ensureShortcutBoardPlacements(togglePinned(task), settings, TASK_TILE_SIZE)
+                );
+              },
+            },
+            {
+              id: `favorite-task-${task.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: task.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "tasks",
+                  ensureShortcutBoardPlacements(toggleFavorite(task), settings, TASK_TILE_SIZE)
+                );
+              },
+            },
+            {
+              id: `delete-task-${task.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void hardDelete("tasks", task.id);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+    ];
+
+  async function handleSidePanelMoveTask(
+    itemId: string,
+    targetGroupPanelId: string | null
+  ) {
+    const targetGroupId = targetGroupPanelId?.replace(/^group-/, "") ?? null;
+    const targetGroup = targetGroupId
+      ? groups.find((entry) => entry.id === targetGroupId) ?? null
+      : null;
+
+    if (itemId.startsWith("group-")) {
+      const groupId = itemId.replace(/^group-/, "");
+      const group = groups.find((entry) => entry.id === groupId);
+
+      if (!group || group.parentGroupId === targetGroupId) {
+        return;
+      }
+
+      const descendantGroupIds = getDescendantGroupIds(groups, group.id);
+
+      if (targetGroupId && (targetGroupId === group.id || descendantGroupIds.includes(targetGroupId))) {
+        return;
+      }
+
+      const placement = targetGroup
+        ? createContainerPlacement(
+            groupPlacements.get(targetGroup.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: GROUP_DEFAULT_SIZE.width,
+                height: GROUP_DEFAULT_SIZE.height,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+              (key) => key !== `group-${group.id}`
+            ).length,
+            GROUP_DEFAULT_SIZE,
+            TASK_GROUP_LAYOUT
+          ).placement
+        : getSpacePlacement(
+            ensureEntityCenteredInSpace(group, TASKS_SPACE, viewport, GROUP_DEFAULT_SIZE),
+            TASKS_SPACE,
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: GROUP_DEFAULT_SIZE.width,
+              height: GROUP_DEFAULT_SIZE.height,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+          );
+
+      await handleGroupPlacementCommit(group, placement, targetGroupId);
+      return;
+    }
+
+    const taskId = itemId.replace(/^task-/, "");
+    const task = tasks.find((entry) => entry.id === taskId);
+
+    if (!task || task.groupId === targetGroupId) {
+      return;
+    }
+
+    let nextTask = ensureShortcutBoardPlacements(
+      {
+        ...task,
+        groupId: targetGroupId,
+      },
+      settings,
+      TASK_TILE_SIZE
+    );
+
+    if (!targetGroup) {
+      nextTask = ensureEntityCenteredInSpace(nextTask, TASKS_SPACE, viewport, TASK_TILE_SIZE);
+      await saveItem("tasks", nextTask);
+      return;
+    }
+
+    const targetPlacement =
+      groupPlacements.get(targetGroup.id) ??
+      createGridPlacement(0, {
+        startX: 120,
+        startY: 120,
+        width: GROUP_DEFAULT_SIZE.width,
+        height: GROUP_DEFAULT_SIZE.height,
+        columns: 2,
+        gapX: 48,
+        gapY: 48,
+      });
+    const { container, placement } = createContainerPlacement(
+      targetPlacement,
+      (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+        (key) => key !== `task-${nextTask.id}`
+      ).length,
+      TASK_TILE_SIZE,
+      TASK_GROUP_LAYOUT
+    );
+
+    nextTask = setSpacePlacement(nextTask, TASKS_SPACE, placement);
+
+    await Promise.all([
+      saveItem("tasks", nextTask),
+      container.width !== targetPlacement.width || container.height !== targetPlacement.height
+        ? saveItem("taskGroups", setSpacePlacement(targetGroup, TASKS_SPACE, container))
+        : Promise.resolve(),
+    ]);
+  }
+
   function openCreateTask(groupId?: string | null) {
     setTaskForm({
       ...emptyTaskForm,
@@ -693,7 +929,8 @@ export default function TasksPage() {
 
   async function handleGroupPlacementCommit(
     group: TaskGroup,
-    placement: ReturnType<typeof createGridPlacement>
+    placement: ReturnType<typeof createGridPlacement>,
+    forcedTargetGroupId?: string | null
   ) {
     const previousPlacement = groupPlacements.get(group.id);
 
@@ -703,26 +940,30 @@ export default function TasksPage() {
 
     const descendantGroupIds = getDescendantGroupIds(groups, group.id);
     const blockedGroupIds = new Set([group.id, ...descendantGroupIds]);
-    const targetGroup = groups
-      .filter((entry) => !blockedGroupIds.has(entry.id))
-      .map((entry) => ({
-        group: entry,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(entry.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5)?.group;
+    const targetGroup =
+      forcedTargetGroupId === undefined
+        ? getInnermostContainingEntry(
+            placement,
+            groups.filter((entry) => !blockedGroupIds.has(entry.id)),
+            (entry) =>
+              groupPlacements.get(entry.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: 760,
+                height: 380,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            18
+          )
+        : forcedTargetGroupId
+          ? groups.find(
+              (entry) =>
+                entry.id === forcedTargetGroupId && !blockedGroupIds.has(entry.id)
+            ) ?? null
+          : null;
 
     let nextPlacement = placement;
     const changedGroups = new Map<string, TaskGroup>();
@@ -861,32 +1102,29 @@ export default function TasksPage() {
     task: TaskItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "tasks",
       setSpacePlacement(
         {
           ...task,
-          groupId: targetGroup?.group.id ?? null,
+          groupId: targetGroup?.id ?? null,
         },
         TASKS_SPACE,
         placement
@@ -898,32 +1136,29 @@ export default function TasksPage() {
     text: BoardTextItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "boardTexts",
       setSpacePlacement(
         {
           ...text,
-          parentGroupId: targetGroup?.group.id ?? null,
+          parentGroupId: targetGroup?.id ?? null,
         },
         TASKS_SPACE,
         placement
@@ -933,26 +1168,68 @@ export default function TasksPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
-            {t("createGroup")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
-            {t("createText")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={() => openCreateTask()}>
-            <Plus className="h-4 w-4" />
-            {t("createTask")}
-          </Button>
-        </div>
-      </div>
+      {!listMode ? (
+        <SpaceSidePanel
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateTask()}>
+                {t("createTask")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveTask(itemId, targetGroupId);
+          }}
+          title={t("tasks")}
+        />
+      ) : null}
 
-      <SpaceCanvas
+      {!listMode ? (
+        <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+              {t("createGroup")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+              {t("createText")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="gap-2 rounded-full" onClick={() => openCreateTask()}>
+              <Plus className="h-4 w-4" />
+              {t("createTask")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateTask()}>
+                {t("createTask")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveTask(itemId, targetGroupId);
+          }}
+          title={t("tasks")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -1141,11 +1418,26 @@ export default function TasksPage() {
         size={{ width: 4600, height: 2800 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
 

@@ -1,23 +1,133 @@
 export function normalizeUrl(value: string) {
-  if (!value.trim()) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
     return "";
   }
 
-  if (/^https?:\/\//i.test(value)) {
-    return value;
+  if (/^[a-z]+:\/\//i.test(trimmed) || /^(data|blob):/i.test(trimmed)) {
+    return trimmed;
   }
 
-  return `https://${value}`;
+  return `https://${trimmed}`;
+}
+
+function parseExternalUrl(value: string) {
+  try {
+    const parsed = new URL(value);
+
+    if (
+      parsed.protocol !== "http:" &&
+      parsed.protocol !== "https:" &&
+      parsed.protocol !== "data:" &&
+      parsed.protocol !== "blob:"
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHostname(hostname: string) {
+  return hostname.trim().replace(/\.+$/, "").toLowerCase();
+}
+
+function isResolvableHostname(hostname: string) {
+  const normalized = normalizeHostname(hostname);
+
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized === "localhost") {
+    return true;
+  }
+
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(normalized)) {
+    return true;
+  }
+
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    return true;
+  }
+
+  return normalized.includes(".");
+}
+
+function sanitizeImageUrl(value: string) {
+  const normalized = normalizeUrl(value);
+
+  if (!normalized) {
+    return "";
+  }
+
+  const parsed = parseExternalUrl(normalized);
+
+  if (!parsed) {
+    return "";
+  }
+
+  return normalized;
+}
+
+function sanitizeStoredIconUrl(value: string) {
+  const sanitized = sanitizeImageUrl(value);
+
+  if (!sanitized) {
+    return "";
+  }
+
+  const parsed = parseExternalUrl(sanitized);
+
+  if (!parsed || parsed.protocol === "data:" || parsed.protocol === "blob:") {
+    return sanitized;
+  }
+
+  if (parsed.hostname.includes("google.com") && parsed.pathname.includes("/s2/favicons")) {
+    const domain = normalizeHostname(parsed.searchParams.get("domain") ?? "");
+    return isResolvableHostname(domain) ? sanitized : "";
+  }
+
+  if (parsed.hostname.includes("gstatic.com") && parsed.pathname.includes("/faviconV2")) {
+    const targetUrl = parsed.searchParams.get("url") ?? "";
+    const target = parseExternalUrl(normalizeUrl(targetUrl));
+    const targetHostname = normalizeHostname(target?.hostname ?? "");
+
+    return isResolvableHostname(targetHostname) ? sanitized : "";
+  }
+
+  return sanitized;
 }
 
 export function getFaviconUrl(url: string) {
-  try {
-    const normalized = normalizeUrl(url);
-    const hostname = new URL(normalized).hostname;
-    return `https://www.google.com/s2/favicons?domain=${hostname}&sz=128`;
-  } catch {
+  const normalized = normalizeUrl(url);
+  const parsed = parseExternalUrl(normalized);
+  const hostname = normalizeHostname(parsed?.hostname ?? "");
+
+  if (!isResolvableHostname(hostname)) {
     return "";
   }
+
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostname)}&sz=128`;
+}
+
+export function resolveLinkIconUrl({
+  url,
+  customIconUrl,
+  iconUrl,
+}: {
+  url: string;
+  customIconUrl?: string | null;
+  iconUrl?: string | null;
+}) {
+  return (
+    sanitizeImageUrl(customIconUrl ?? "") ||
+    sanitizeStoredIconUrl(iconUrl ?? "") ||
+    getFaviconUrl(url)
+  );
 }
 
 export function getYoutubeEmbedUrl(url: string) {

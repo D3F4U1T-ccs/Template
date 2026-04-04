@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { MoreHorizontal, Plus } from "lucide-react";
+import { MoreHorizontal, PencilLine, Plus, Rows3, Trash2 } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -54,7 +59,7 @@ import {
 import {
   createGridPlacement,
   createViewportCenteredOnPlacement,
-  getPlacementOverlapRatio,
+  getInnermostContainingEntry,
 } from "@/utils/space";
 import { formatDateTime } from "@/utils/date";
 
@@ -121,6 +126,7 @@ export default function NotesPage() {
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
   const [form, setForm] = useState(emptyNoteForm);
@@ -423,6 +429,236 @@ export default function NotesPage() {
     [nodes, t]
   );
 
+  const getSidePanelGroupId = (groupId: string) => `group-${groupId}`;
+
+  const sidePanelItems: Array<SpaceSidePanelItem> = [
+      ...[...groups]
+        .sort((left, right) => left.order - right.order)
+        .map((group) => ({
+          id: getSidePanelGroupId(group.id),
+          parentId: group.parentGroupId ? getSidePanelGroupId(group.parentGroupId) : null,
+          title: group.title,
+          subtitle: group.description || t("notes"),
+          kind: "group" as const,
+          accentClassName: group.accent,
+          draggable: true,
+          actions: [
+            {
+              id: `edit-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditGroup(group);
+              },
+            },
+            {
+              id: `pin-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "noteGroups",
+                  ensureShortcutBoardPlacements(
+                    togglePinned(group),
+                    settings,
+                    GROUP_DEFAULT_SIZE
+                  )
+                );
+              },
+            },
+            {
+              id: `favorite-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "noteGroups",
+                  ensureShortcutBoardPlacements(
+                    toggleFavorite(group),
+                    settings,
+                    GROUP_DEFAULT_SIZE
+                  )
+                );
+              },
+            },
+            {
+              id: `delete-group-${group.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void deleteGroup(group);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+      ...[...notes]
+        .sort((left, right) => left.order - right.order)
+        .map((note) => ({
+          id: `note-${note.id}`,
+          parentId: note.groupId ? getSidePanelGroupId(note.groupId) : null,
+          title: note.title,
+          subtitle: note.description || formatDateTime(note.updatedAt),
+          kind: "item" as const,
+          draggable: true,
+          onClick: () => {
+            navigate(`/notes/${note.id}`);
+          },
+          actions: [
+            {
+              id: `open-note-${note.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("open"),
+              onClick: () => {
+                navigate(`/notes/${note.id}`);
+              },
+            },
+            {
+              id: `pin-note-${note.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: note.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "notes",
+                  ensureShortcutBoardPlacements(togglePinned(note), settings, NOTE_TILE_SIZE)
+                );
+              },
+            },
+            {
+              id: `favorite-note-${note.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: note.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "notes",
+                  ensureShortcutBoardPlacements(toggleFavorite(note), settings, NOTE_TILE_SIZE)
+                );
+              },
+            },
+            {
+              id: `delete-note-${note.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void deleteNote(note);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+    ];
+
+  async function handleSidePanelMoveNote(
+    itemId: string,
+    targetGroupPanelId: string | null
+  ) {
+    const targetGroupId = targetGroupPanelId?.replace(/^group-/, "") ?? null;
+    const targetGroup = targetGroupId
+      ? groups.find((entry) => entry.id === targetGroupId) ?? null
+      : null;
+
+    if (itemId.startsWith("group-")) {
+      const groupId = itemId.replace(/^group-/, "");
+      const group = groups.find((entry) => entry.id === groupId);
+
+      if (!group || group.parentGroupId === targetGroupId) {
+        return;
+      }
+
+      const descendantGroupIds = getDescendantGroupIds(groups, group.id);
+
+      if (targetGroupId && (targetGroupId === group.id || descendantGroupIds.includes(targetGroupId))) {
+        return;
+      }
+
+      const placement = targetGroup
+        ? createContainerPlacement(
+            groupPlacements.get(targetGroup.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: GROUP_DEFAULT_SIZE.width,
+                height: GROUP_DEFAULT_SIZE.height,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+              (key) => key !== `group-${group.id}`
+            ).length,
+            GROUP_DEFAULT_SIZE,
+            LINK_GROUP_LAYOUT
+          ).placement
+        : getSpacePlacement(
+            ensureEntityCenteredInSpace(group, NOTES_SPACE, viewport, GROUP_DEFAULT_SIZE),
+            NOTES_SPACE,
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: GROUP_DEFAULT_SIZE.width,
+              height: GROUP_DEFAULT_SIZE.height,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+          );
+
+      await handleGroupPlacementCommit(group, placement, targetGroupId);
+      return;
+    }
+
+    const noteId = itemId.replace(/^note-/, "");
+    const note = notes.find((entry) => entry.id === noteId);
+
+    if (!note || note.groupId === targetGroupId) {
+      return;
+    }
+
+    let nextNote = ensureShortcutBoardPlacements(
+      {
+        ...note,
+        groupId: targetGroupId,
+      },
+      settings,
+      NOTE_TILE_SIZE
+    );
+
+    if (!targetGroup) {
+      nextNote = ensureEntityCenteredInSpace(nextNote, NOTES_SPACE, viewport, NOTE_TILE_SIZE);
+      await saveItem("notes", nextNote);
+      return;
+    }
+
+    const targetPlacement =
+      groupPlacements.get(targetGroup.id) ??
+      createGridPlacement(0, {
+        startX: 120,
+        startY: 120,
+        width: GROUP_DEFAULT_SIZE.width,
+        height: GROUP_DEFAULT_SIZE.height,
+        columns: 2,
+        gapX: 48,
+        gapY: 48,
+      });
+    const { container, placement } = createContainerPlacement(
+      targetPlacement,
+      (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+        (key) => key !== `note-${nextNote.id}`
+      ).length,
+      NOTE_TILE_SIZE,
+      LINK_GROUP_LAYOUT
+    );
+
+    nextNote = setSpacePlacement(nextNote, NOTES_SPACE, placement);
+
+    await Promise.all([
+      saveItem("notes", nextNote),
+      container.width !== targetPlacement.width || container.height !== targetPlacement.height
+        ? saveItem("noteGroups", setSpacePlacement(targetGroup, NOTES_SPACE, container))
+        : Promise.resolve(),
+    ]);
+  }
+
   const modalOpen = createOpen || !!selectedNote;
 
   useEffect(() => {
@@ -714,7 +950,8 @@ export default function NotesPage() {
 
   async function handleGroupPlacementCommit(
     group: NoteGroup,
-    placement: ReturnType<typeof createGridPlacement>
+    placement: ReturnType<typeof createGridPlacement>,
+    forcedTargetGroupId?: string | null
   ) {
     const previousPlacement = groupPlacements.get(group.id);
 
@@ -724,26 +961,30 @@ export default function NotesPage() {
 
     const descendantGroupIds = getDescendantGroupIds(groups, group.id);
     const blockedGroupIds = new Set([group.id, ...descendantGroupIds]);
-    const targetGroup = groups
-      .filter((entry) => !blockedGroupIds.has(entry.id))
-      .map((entry) => ({
-        group: entry,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(entry.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5)?.group;
+    const targetGroup =
+      forcedTargetGroupId === undefined
+        ? getInnermostContainingEntry(
+            placement,
+            groups.filter((entry) => !blockedGroupIds.has(entry.id)),
+            (entry) =>
+              groupPlacements.get(entry.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: 760,
+                height: 380,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            18
+          )
+        : forcedTargetGroupId
+          ? groups.find(
+              (entry) =>
+                entry.id === forcedTargetGroupId && !blockedGroupIds.has(entry.id)
+            ) ?? null
+          : null;
 
     let nextPlacement = placement;
     const changedGroups = new Map<string, NoteGroup>();
@@ -882,32 +1123,29 @@ export default function NotesPage() {
     note: NoteDocument,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "notes",
       setSpacePlacement(
         {
           ...note,
-          groupId: targetGroup?.group.id ?? null,
+          groupId: targetGroup?.id ?? null,
         },
         NOTES_SPACE,
         placement
@@ -919,32 +1157,29 @@ export default function NotesPage() {
     text: BoardTextItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "boardTexts",
       setSpacePlacement(
         {
           ...text,
-          parentGroupId: targetGroup?.group.id ?? null,
+          parentGroupId: targetGroup?.id ?? null,
         },
         NOTES_SPACE,
         placement
@@ -954,26 +1189,68 @@ export default function NotesPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
-            {t("createGroup")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
-            {t("createText")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={() => openCreateNote()}>
-            <Plus className="h-4 w-4" />
-            {t("createNote")}
-          </Button>
-        </div>
-      </div>
+      {!listMode ? (
+        <SpaceSidePanel
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateNote()}>
+                {t("createNote")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveNote(itemId, targetGroupId);
+          }}
+          title={t("notes")}
+        />
+      ) : null}
 
-      <SpaceCanvas
+      {!listMode ? (
+        <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+              {t("createGroup")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+              {t("createText")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="gap-2 rounded-full" onClick={() => openCreateNote()}>
+              <Plus className="h-4 w-4" />
+              {t("createNote")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateNote()}>
+                {t("createNote")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveNote(itemId, targetGroupId);
+          }}
+          title={t("notes")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -1161,11 +1438,26 @@ export default function NotesPage() {
         size={{ width: 4600, height: 2800 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
 

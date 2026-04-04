@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, PencilLine, PinOff, Rows3, Trash2 } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
 import { Modal } from "@/components/ui/modal";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -51,8 +56,9 @@ import {
 import {
   createGridPlacement,
   createViewportCenteredOnPlacement,
-  getPlacementOverlapRatio,
+  getInnermostContainingEntry,
 } from "@/utils/space";
+import { resolveLinkIconUrl } from "@/utils/files";
 
 type DashboardPinnedItem = {
   id: string;
@@ -138,7 +144,11 @@ function buildPinnedItems(
         route: "/links",
         collectionName: "links" as const,
         entity: item,
-        avatarUrl: item.customIconUrl || item.iconUrl,
+        avatarUrl: resolveLinkIconUrl({
+          url: item.url,
+          customIconUrl: item.customIconUrl,
+          iconUrl: item.iconUrl,
+        }),
         avatarLabel: "L",
       })),
     ...collections.linkGroups
@@ -256,6 +266,7 @@ export default function DashboardPage() {
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
 
   const groups = useMemo(
@@ -476,6 +487,161 @@ export default function DashboardPage() {
     [nodes, t]
   );
 
+  const getSidePanelGroupId = (groupId: string) => `group-${groupId}`;
+
+  const sidePanelItems: Array<SpaceSidePanelItem> = [
+      ...[...groups]
+        .sort((left, right) => left.order - right.order)
+        .map((group) => ({
+          id: getSidePanelGroupId(group.id),
+          title: group.title,
+          subtitle: group.description || t("dashboard"),
+          kind: "group" as const,
+          accentClassName: group.accent,
+          previewImageUrl: group.coverUrl || undefined,
+          actions: [
+            {
+              id: `edit-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditGroup(group);
+              },
+            },
+            {
+              id: `delete-group-${group.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void deleteGroup(group);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+      ...pinnedItems.map((item) => ({
+        id: `item-${item.id}`,
+        parentId: item.entity.dashboardGroupId ? getSidePanelGroupId(item.entity.dashboardGroupId) : null,
+        title: item.title,
+        subtitle: item.subtitle,
+        kind: "item" as const,
+        previewImageUrl: "avatarUrl" in item ? item.avatarUrl : undefined,
+        previewLabel: item.avatarLabel,
+        draggable: true,
+        onClick: () => {
+          navigate(item.route);
+        },
+        actions: [
+          {
+            id: `open-${item.id}`,
+            icon: <PencilLine className="h-4 w-4" />,
+            label: t("open"),
+            onClick: () => {
+              navigate(item.route);
+            },
+          },
+          {
+            id: `unpin-${item.id}`,
+            icon: <PinOff className="h-4 w-4" />,
+            label: t("unpin"),
+            onClick: () => {
+              void saveItem(item.collectionName, togglePinned(item.entity) as never);
+            },
+          },
+          {
+            id: `favorite-${item.id}`,
+            icon: <PencilLine className="h-4 w-4" />,
+            label: item.entity.favorite ? t("removeFavorite") : t("favorite"),
+            onClick: () => {
+              void saveItem(
+                item.collectionName,
+                ensureShortcutBoardPlacements(
+                  toggleFavorite(item.entity),
+                  settings,
+                  getDashboardPinnedItemSize(item)
+                ) as never
+              );
+            },
+          },
+          {
+            id: `delete-${item.id}`,
+            icon: <Trash2 className="h-4 w-4" />,
+            label: t("delete"),
+            onClick: () => {
+              void hardDelete(item.collectionName, item.entity.id);
+            },
+            tone: "danger" as const,
+          },
+          ],
+        })),
+    ];
+
+  async function handleSidePanelMovePinnedItem(
+    itemId: string,
+    targetGroupPanelId: string | null
+  ) {
+    const pinnedId = itemId.replace(/^item-/, "");
+    const targetGroupId = targetGroupPanelId?.replace(/^group-/, "") ?? null;
+    const item = pinnedItems.find((entry) => entry.id === pinnedId);
+    const targetGroup = targetGroupId
+      ? groups.find((entry) => entry.id === targetGroupId) ?? null
+      : null;
+
+    if (!item || item.entity.dashboardGroupId === targetGroupId) {
+      return;
+    }
+
+    const itemSize = getDashboardPinnedItemSize(item);
+
+    if (!targetGroup) {
+      await saveItem(
+        item.collectionName,
+        ensureEntityCenteredInSpace(
+          setDashboardGroupId(item.entity, null),
+          DASHBOARD_SPACE,
+          viewport,
+          itemSize
+        ) as never
+      );
+      return;
+    }
+
+    const targetPlacement =
+      groupPlacements.get(targetGroup.id) ??
+      createGridPlacement(0, {
+        startX: 120,
+        startY: 120,
+        width: DASHBOARD_GROUP_SIZE.width,
+        height: DASHBOARD_GROUP_SIZE.height,
+        columns: 2,
+        gapX: 48,
+        gapY: 48,
+      });
+    const siblingCount = pinnedItems.filter(
+      (entry) => entry.entity.dashboardGroupId === targetGroup.id && entry.id !== item.id
+    ).length;
+    const { container, placement } = createContainerPlacement(
+      targetPlacement,
+      siblingCount,
+      itemSize,
+      LINK_GROUP_LAYOUT
+    );
+
+    await Promise.all([
+      saveItem(
+        item.collectionName,
+        setSpacePlacement(
+          setDashboardGroupId(item.entity, targetGroup.id),
+          DASHBOARD_SPACE,
+          placement
+        ) as never
+      ),
+      container.width !== targetPlacement.width || container.height !== targetPlacement.height
+        ? saveItem("dashboardGroups", setSpacePlacement(targetGroup, DASHBOARD_SPACE, container))
+        : Promise.resolve(),
+    ]);
+  }
+
   const selectedGroupItems = useMemo(
     () =>
       selectedGroup
@@ -645,30 +811,27 @@ export default function DashboardPage() {
     item: DashboardPinnedItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: DASHBOARD_GROUP_SIZE.width,
-              height: DASHBOARD_GROUP_SIZE.height,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: DASHBOARD_GROUP_SIZE.width,
+          height: DASHBOARD_GROUP_SIZE.height,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       item.collectionName,
       setSpacePlacement(
-        setDashboardGroupId(item.entity, targetGroup?.group.id ?? null),
+        setDashboardGroupId(item.entity, targetGroup?.id ?? null),
         DASHBOARD_SPACE,
         placement
       ) as never
@@ -677,20 +840,52 @@ export default function DashboardPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
-            {t("createDashboardGroup")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
-            {t("createText")}
-          </Button>
-        </div>
-      </div>
+      {!listMode ? (
+        <SpaceSidePanel
+          actions={
+            <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
+              {t("createDashboardGroup")}
+            </Button>
+          }
+          items={sidePanelItems}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMovePinnedItem(itemId, targetGroupId);
+          }}
+          title={t("dashboard")}
+        />
+      ) : null}
 
-      <SpaceCanvas
+      {!listMode ? (
+        <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
+              {t("createDashboardGroup")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+              {t("createText")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          actions={
+            <Button className="rounded-full" onClick={openCreateGroup} variant="secondary">
+              {t("createDashboardGroup")}
+            </Button>
+          }
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMovePinnedItem(itemId, targetGroupId);
+          }}
+          title={t("dashboard")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -925,11 +1120,26 @@ export default function DashboardPage() {
         size={{ width: 4200, height: 2600 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
 
@@ -1116,7 +1326,11 @@ function DashboardPinnedFrameCard({
                   alt={link.title}
                   className="h-10 w-10 rounded-full object-cover"
                   draggable={false}
-                  src={link.customIconUrl || link.iconUrl}
+                  src={resolveLinkIconUrl({
+                    url: link.url,
+                    customIconUrl: link.customIconUrl,
+                    iconUrl: link.iconUrl,
+                  })}
                 />
                 <div className="min-w-0">
                   <p className="truncate text-xs font-semibold text-white/95">{link.title}</p>

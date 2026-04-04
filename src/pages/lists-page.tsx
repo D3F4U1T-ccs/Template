@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { MoreHorizontal, Plus } from "lucide-react";
+import { ExternalLink, MoreHorizontal, PencilLine, Plus, Rows3, Trash2 } from "lucide-react";
 
 import { accentOptions, defaultListFeatures, listFeatureOptions } from "@/data/app-config";
 import { useI18n } from "@/data/i18n";
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { CanvasFrame } from "@/components/ui/canvas-frame";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
 import { Modal } from "@/components/ui/modal";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -52,7 +57,7 @@ import {
 import {
   createGridPlacement,
   createViewportCenteredOnPlacement,
-  getPlacementOverlapRatio,
+  getInnermostContainingEntry,
 } from "@/utils/space";
 
 const LISTS_SPACE: WorkspaceSpaceKey = "lists-board";
@@ -113,6 +118,37 @@ const emptyItemForm = {
   tags: "",
 };
 
+const emptyBulkImportForm = {
+  targetListId: "",
+  listTitle: "",
+  listType: "Anime",
+  description: "",
+  rawText: "",
+};
+
+function normalizeImportedListLine(line: string) {
+  const compact = line.replace(/\u00a0/g, " ").trim();
+
+  if (!compact) {
+    return "";
+  }
+
+  return compact
+    .replace(/^\[[ xX]\]\s*/, "")
+    .replace(/^[-*•]+\s*/, "")
+    .replace(/^\d+\s*(?:[.)\-–—:]+)?\s*/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function parseBulkImportTitles(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => normalizeImportedListLine(line))
+    .filter(Boolean);
+}
+
 export default function ListsPage() {
   const navigate = useNavigate();
   const { listId } = useParams();
@@ -122,8 +158,11 @@ export default function ListsPage() {
   const [listModalOpen, setListModalOpen] = useState(false);
   const [itemModalOpen, setItemModalOpen] = useState(false);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
   const [listForm, setListForm] = useState(emptyListForm);
   const [itemForm, setItemForm] = useState(emptyItemForm);
+  const [bulkImportModalOpen, setBulkImportModalOpen] = useState(false);
+  const [bulkImportForm, setBulkImportForm] = useState(emptyBulkImportForm);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const listFeatureCopy = useMemo(
     () => ({
@@ -210,6 +249,14 @@ export default function ListsPage() {
   const currentItemList = useMemo(
     () => lists.find((item) => item.id === itemForm.listId) ?? selectedList,
     [itemForm.listId, lists, selectedList]
+  );
+  const bulkImportTargetList = useMemo(
+    () => lists.find((item) => item.id === bulkImportForm.targetListId) ?? null,
+    [bulkImportForm.targetListId, lists]
+  );
+  const parsedBulkImportTitles = useMemo(
+    () => parseBulkImportTitles(bulkImportForm.rawText),
+    [bulkImportForm.rawText]
   );
 
   const framePlacements = useMemo(() => {
@@ -408,6 +455,195 @@ export default function ListsPage() {
     [nodes, t]
   );
 
+  const getSidePanelFrameId = (listId: string) => `frame-${listId}`;
+
+  const sidePanelItems = useMemo<Array<SpaceSidePanelItem>>(
+    () => [
+      ...[...lists]
+        .sort((left, right) => left.order - right.order)
+        .map((list) => ({
+          id: getSidePanelFrameId(list.id),
+          title: list.title,
+          subtitle: list.description || list.listType || t("lists"),
+          kind: "group" as const,
+          accentClassName: list.accent,
+          previewImageUrl: list.coverUrl || undefined,
+          actions: [
+            {
+              id: `open-list-${list.id}`,
+              icon: <ExternalLink className="h-4 w-4" />,
+              label: t("open"),
+              onClick: () => {
+                navigate(`/lists/${list.id}`);
+              },
+            },
+            {
+              id: `edit-list-${list.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditList(list);
+              },
+            },
+            {
+              id: `pin-list-${list.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: list.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "lists",
+                  ensureShortcutBoardPlacements(togglePinned(list), settings, FRAME_DEFAULT_SIZE)
+                );
+              },
+            },
+            {
+              id: `favorite-list-${list.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: list.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "lists",
+                  ensureShortcutBoardPlacements(toggleFavorite(list), settings, FRAME_DEFAULT_SIZE)
+                );
+              },
+            },
+            {
+              id: `delete-list-${list.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void Promise.all([
+                  saveMany(
+                    "listItems",
+                    collections.listItems.filter((item) => item.listId !== list.id)
+                  ),
+                  hardDelete("lists", list.id),
+                ]);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+      ...[...activeItems]
+        .sort((left, right) => left.order - right.order)
+        .map((item) => ({
+          id: `item-${item.id}`,
+          parentId: item.listId ? getSidePanelFrameId(item.listId) : null,
+          title: item.title,
+          subtitle: item.description || item.itemNotes || t("lists"),
+          kind: "item" as const,
+          previewImageUrl: item.imageUrl || undefined,
+          draggable: true,
+          onClick: () => {
+            openEditItem(item);
+          },
+          actions: [
+            {
+              id: `edit-item-${item.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditItem(item);
+              },
+            },
+            {
+              id: `pin-item-${item.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: item.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveItem(
+                  "listItems",
+                  ensureShortcutBoardPlacements(togglePinned(item), settings, LIST_ITEM_SIZE)
+                );
+              },
+            },
+            {
+              id: `favorite-item-${item.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: item.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveItem(
+                  "listItems",
+                  ensureShortcutBoardPlacements(toggleFavorite(item), settings, LIST_ITEM_SIZE)
+                );
+              },
+            },
+            {
+              id: `delete-item-${item.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void hardDelete("listItems", item.id);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+    ],
+    [activeItems, collections.listItems, hardDelete, lists, navigate, saveItem, saveMany, settings, t]
+  );
+
+  async function handleSidePanelMoveListItem(
+    itemId: string,
+    targetFramePanelId: string | null
+  ) {
+    const listItemId = itemId.replace(/^item-/, "");
+    const targetListId = targetFramePanelId?.replace(/^frame-/, "") ?? null;
+    const item = activeItems.find((entry) => entry.id === listItemId);
+    const targetList = targetListId
+      ? lists.find((entry) => entry.id === targetListId) ?? null
+      : null;
+
+    if (!item || item.listId === targetListId) {
+      return;
+    }
+
+    let nextItem = ensureShortcutBoardPlacements(
+      {
+        ...item,
+        listId: targetListId,
+      },
+      settings,
+      LIST_ITEM_SIZE
+    );
+
+    if (!targetList) {
+      nextItem = ensureEntityCenteredInSpace(nextItem, LISTS_SPACE, viewport, LIST_ITEM_SIZE);
+      await saveItem("listItems", nextItem);
+      return;
+    }
+
+    const targetPlacement =
+      framePlacements.get(targetList.id) ??
+      createGridPlacement(0, {
+        startX: 120,
+        startY: 120,
+        width: FRAME_DEFAULT_SIZE.width,
+        height: FRAME_DEFAULT_SIZE.height,
+        gapX: 52,
+        gapY: 52,
+        columns: 2,
+      });
+    const siblingCount = activeItems.filter(
+      (entry) => entry.listId === targetList.id && entry.id !== nextItem.id
+    ).length;
+    const { container, placement } = createContainerPlacement(
+      targetPlacement,
+      siblingCount,
+      LIST_ITEM_SIZE,
+      LIST_FRAME_LAYOUT
+    );
+
+    nextItem = setSpacePlacement(nextItem, LISTS_SPACE, placement);
+
+    await Promise.all([
+      saveItem("listItems", nextItem),
+      container.width !== targetPlacement.width || container.height !== targetPlacement.height
+        ? saveItem("lists", setSpacePlacement(targetList, LISTS_SPACE, container))
+        : Promise.resolve(),
+    ]);
+  }
+
   function openCreateList() {
     setListForm({
       ...emptyListForm,
@@ -437,6 +673,18 @@ export default function ListsPage() {
       listId: targetListId ?? selectedList?.id ?? "",
     });
     setItemModalOpen(true);
+  }
+
+  function openBulkImport(targetList?: SmartList | null) {
+    setBulkImportForm({
+      ...emptyBulkImportForm,
+      targetListId: targetList?.id ?? "",
+      listTitle: targetList ? "" : "",
+      listType: targetList?.listType || "Anime",
+      description: targetList ? "" : "",
+      rawText: "",
+    });
+    setBulkImportModalOpen(true);
   }
 
   function openCreateText() {
@@ -520,6 +768,104 @@ export default function ListsPage() {
     await saveItem("lists", nextList);
     setListModalOpen(false);
     navigate(`/lists/${nextList.id}`);
+  }
+
+  async function saveBulkImport() {
+    if (!parsedBulkImportTitles.length) {
+      return;
+    }
+
+    const importingIntoExistingList = !!bulkImportTargetList;
+    let targetList = bulkImportTargetList;
+
+    if (!targetList) {
+      let nextList = upsertEntity<SmartList>(
+        undefined,
+        {
+          title: bulkImportForm.listTitle.trim() || t("untitledFrame"),
+          description: bulkImportForm.description.trim(),
+          coverUrl: "",
+          listType: bulkImportForm.listType.trim() || "Anime",
+          accent: accentOptions[Math.floor(Math.random() * accentOptions.length)],
+          cornerRadius: emptyListForm.cornerRadius,
+          features: { ...defaultListFeatures },
+        },
+        nextOrder(collections.lists)
+      );
+
+      nextList = ensureShortcutBoardPlacements(nextList, settings, FRAME_DEFAULT_SIZE);
+      targetList = ensureEntityCenteredInSpace(nextList, LISTS_SPACE, viewport, FRAME_DEFAULT_SIZE);
+    }
+
+    const startingPlacement = getSpacePlacement(
+      targetList,
+      LISTS_SPACE,
+      framePlacements.get(targetList.id) ??
+        createGridPlacement(lists.length, {
+          startX: 120,
+          startY: 120,
+          width: FRAME_DEFAULT_SIZE.width,
+          height: FRAME_DEFAULT_SIZE.height,
+          gapX: 52,
+          gapY: 52,
+          columns: 2,
+        })
+    );
+    const existingTargetItems = activeItems
+      .filter((item) => item.listId === targetList?.id)
+      .sort((left, right) => left.order - right.order);
+    const startOrder = nextOrder(collections.listItems);
+    let containerPlacement = startingPlacement;
+    const importedItems = parsedBulkImportTitles.map((title, index) => {
+      const layout = createContainerPlacement(
+        containerPlacement,
+        existingTargetItems.length + index,
+        LIST_ITEM_SIZE,
+        LIST_FRAME_LAYOUT
+      );
+
+      containerPlacement = layout.container;
+
+      let nextItem = upsertEntity<SmartListItem>(
+        undefined,
+        {
+          title,
+          description: "",
+          listId: targetList?.id ?? null,
+          imageUrl: "",
+          rating: null,
+          cornerRadius: emptyItemForm.cornerRadius,
+          watched: false,
+          progress: null,
+          season: null,
+          episode: null,
+          stoppedAt: "",
+          tokenCount: null,
+          zeroToken: false,
+          itemNotes: "",
+          checked: false,
+          tags: [],
+        },
+        startOrder + index
+      );
+
+      nextItem = ensureShortcutBoardPlacements(nextItem, settings, LIST_ITEM_SIZE);
+      return setSpacePlacement(nextItem, LISTS_SPACE, layout.placement);
+    });
+    const nextList = setSpacePlacement(targetList, LISTS_SPACE, containerPlacement);
+
+    await Promise.all([
+      saveItem("lists", nextList),
+      ...importedItems.map((item) => saveItem("listItems", item)),
+    ]);
+
+    setBulkImportModalOpen(false);
+    setBulkImportForm(emptyBulkImportForm);
+    navigate(`/lists/${nextList.id}`);
+
+    if (!importingIntoExistingList) {
+      setListMode(false);
+    }
   }
 
   async function saveItemEntry() {
@@ -663,32 +1009,29 @@ export default function ListsPage() {
     item: SmartListItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetFrame = lists
-      .map((list) => ({
-        list,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          framePlacements.get(list.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 740,
-              height: 420,
-              gapX: 52,
-              gapY: 52,
-              columns: 2,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetFrame = getInnermostContainingEntry(
+      placement,
+      lists,
+      (list) =>
+        framePlacements.get(list.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 740,
+          height: 420,
+          gapX: 52,
+          gapY: 52,
+          columns: 2,
+        }),
+      20
+    );
 
     await saveItem(
       "listItems",
       setSpacePlacement(
         {
           ...item,
-          listId: targetFrame?.list.id ?? null,
+          listId: targetFrame?.id ?? null,
         },
         LISTS_SPACE,
         placement
@@ -698,21 +1041,69 @@ export default function ListsPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
-        <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={openCreateList}>
-            <Plus className="h-4 w-4" />
-            {t("createList")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
-            {t("createText")}
-          </Button>
-        </div>
-      </div>
+      {!listMode ? (
+        <SpaceSidePanel
+          actions={
+            <>
+              <Button className="rounded-full" onClick={openCreateList}>
+                {t("createList")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openBulkImport()} variant="secondary">
+                {t("bulkImport")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateItem()} variant="secondary">
+                {t("createItem")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveListItem(itemId, targetGroupId);
+          }}
+          title={t("lists")}
+        />
+      ) : null}
 
-      <SpaceCanvas
+      {!listMode ? (
+        <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
+          <div className="pointer-events-auto">
+            <Button className="gap-2 rounded-full" onClick={openCreateList}>
+              <Plus className="h-4 w-4" />
+              {t("createList")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+              {t("createText")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          actions={
+            <>
+              <Button className="rounded-full" onClick={openCreateList}>
+                {t("createList")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openBulkImport()} variant="secondary">
+                {t("bulkImport")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateItem()} variant="secondary">
+                {t("createItem")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveListItem(itemId, targetGroupId);
+          }}
+          title={t("lists")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -894,11 +1285,26 @@ export default function ListsPage() {
         size={{ width: 4400, height: 2800 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
 
@@ -1204,6 +1610,108 @@ export default function ListsPage() {
       <Modal
         footer={
           <div className="flex justify-end gap-3">
+            <Button onClick={() => setBulkImportModalOpen(false)} variant="ghost">
+              {t("cancel")}
+            </Button>
+            <Button disabled={!parsedBulkImportTitles.length} onClick={() => void saveBulkImport()}>
+              {t("save")}
+            </Button>
+          </div>
+        }
+        onClose={() => setBulkImportModalOpen(false)}
+        open={bulkImportModalOpen}
+        size="lg"
+        title={t("bulkImport")}
+      >
+        <div className="space-y-4">
+          <div className="rounded-[24px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4">
+            <p className="text-sm font-medium text-[var(--app-text)]">{t("bulkImportDescription")}</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--app-muted)]">
+              {bulkImportTargetList ? t("bulkImportIntoCurrent") : t("bulkImportCreateListHint")}
+            </p>
+          </div>
+
+          {bulkImportTargetList ? (
+            <div className="rounded-[24px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4">
+              <p className="text-sm text-[var(--app-muted)]">{t("fieldGroup")}</p>
+              <p className="mt-1 text-base font-semibold text-[var(--app-text)]">
+                {bulkImportTargetList.title}
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label={t("fieldTitle")}>
+                <Input
+                  onChange={(event) =>
+                    setBulkImportForm((current) => ({ ...current, listTitle: event.target.value }))
+                  }
+                  placeholder={t("placeholderListTitle")}
+                  value={bulkImportForm.listTitle}
+                />
+              </Field>
+              <Field label={t("fieldType")}>
+                <Input
+                  onChange={(event) =>
+                    setBulkImportForm((current) => ({ ...current, listType: event.target.value }))
+                  }
+                  placeholder={t("placeholderListType")}
+                  value={bulkImportForm.listType}
+                />
+              </Field>
+              <div className="md:col-span-2">
+                <Field label={t("fieldDescription")}>
+                  <Textarea
+                    onChange={(event) =>
+                      setBulkImportForm((current) => ({
+                        ...current,
+                        description: event.target.value,
+                      }))
+                    }
+                    placeholder={t("placeholderListDescription")}
+                    value={bulkImportForm.description}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
+
+          <Field label={t("bulkImportText")}>
+            <Textarea
+              onChange={(event) =>
+                setBulkImportForm((current) => ({ ...current, rawText: event.target.value }))
+              }
+              placeholder={t("bulkImportPlaceholder")}
+              value={bulkImportForm.rawText}
+            />
+          </Field>
+
+          <p className="text-sm text-[var(--app-muted)]">{t("bulkImportHint")}</p>
+
+          <div className="rounded-[24px] border border-[var(--app-border)] bg-[var(--app-panel-soft)] px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-[var(--app-text)]">
+                {parsedBulkImportTitles.length} {t("listItems")}
+              </p>
+            </div>
+            {parsedBulkImportTitles.length ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {parsedBulkImportTitles.slice(0, 12).map((title, index) => (
+                  <Badge key={`${title}-${index}`}>{title}</Badge>
+                ))}
+                {parsedBulkImportTitles.length > 12 ? (
+                  <Badge>+{parsedBulkImportTitles.length - 12}</Badge>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-[var(--app-muted)]">{t("bulkImportEmpty")}</p>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        footer={
+          <div className="flex justify-end gap-3">
             <Button onClick={() => navigate("/lists")} variant="ghost">
               {t("cancel")}
             </Button>
@@ -1231,8 +1739,11 @@ export default function ListsPage() {
                 ) : null}
               </div>
               <div className="flex gap-2">
-            <Button onClick={() => openEditList(selectedList)} variant="secondary">
+                <Button onClick={() => openEditList(selectedList)} variant="secondary">
                   {t("edit")}
+                </Button>
+                <Button onClick={() => openBulkImport(selectedList)} variant="secondary">
+                  {t("bulkImport")}
                 </Button>
                 <Button className="gap-2" onClick={() => openCreateItem(selectedList.id)}>
                   <Plus className="h-4 w-4" />

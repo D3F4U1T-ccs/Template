@@ -74,6 +74,21 @@ export function isPointInsidePlacement(
   );
 }
 
+export function getPlacementCenter(placement: SpacePlacement) {
+  return {
+    x: placement.x + placement.width / 2,
+    y: placement.y + placement.height / 2,
+  };
+}
+
+export function isPlacementCenterInsidePlacement(
+  target: SpacePlacement,
+  container: SpacePlacement,
+  padding = 0
+) {
+  return isPointInsidePlacement(container, getPlacementCenter(target), padding);
+}
+
 export function getPlacementArea(placement: SpacePlacement) {
   return Math.max(0, placement.width) * Math.max(0, placement.height);
 }
@@ -155,6 +170,28 @@ export function createViewportCenteredOnPlacement(
     y: surface.height / 2 - centerY * viewport.zoom,
     zoom: viewport.zoom,
   };
+}
+
+export function getInnermostContainingEntry<T>(
+  target: SpacePlacement,
+  entries: T[],
+  getPlacement: (entry: T) => SpacePlacement,
+  padding = 0
+) {
+  return (
+    entries
+      .map((entry) => ({
+        entry,
+        placement: getPlacement(entry),
+      }))
+      .filter(({ placement }) =>
+        isPlacementCenterInsidePlacement(target, placement, padding)
+      )
+      .sort(
+        (left, right) =>
+          getPlacementArea(left.placement) - getPlacementArea(right.placement)
+      )[0]?.entry ?? null
+  );
 }
 
 type ContainerLayoutOptions = Partial<{

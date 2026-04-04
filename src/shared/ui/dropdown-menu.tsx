@@ -8,7 +8,12 @@ import {
 
 import { cn } from "@/shared/lib/utils";
 
-const DropdownMenu = DropdownMenuPrimitive.Root;
+function DropdownMenu({
+  modal = false,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root modal={modal} {...props} />;
+}
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 
@@ -105,12 +110,11 @@ const DropdownMenuItem = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & {
     inset?: boolean
   }
->(({ className, inset, onClick, onPointerDownCapture, onPointerUpCapture, ...props }, ref) => (
+>(({ className, inset, onClick, onPointerDownCapture, onPointerUpCapture, onSelect, ...props }, ref) => (
   <DropdownMenuPrimitive.Item
     ref={ref}
     onClick={(event) => {
       event.stopPropagation();
-      onClick?.(event);
     }}
     onPointerDownCapture={(event) => {
       event.stopPropagation();
@@ -119,6 +123,14 @@ const DropdownMenuItem = React.forwardRef<
     onPointerUpCapture={(event) => {
       event.stopPropagation();
       onPointerUpCapture?.(event);
+    }}
+    onSelect={(event) => {
+      event.stopPropagation();
+      onSelect?.(event);
+
+      if (!event.defaultPrevented) {
+        onClick?.(event as unknown as React.MouseEvent<HTMLDivElement>);
+      }
     }}
     className={cn(
       "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&>svg]:size-4 [&>svg]:shrink-0",

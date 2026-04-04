@@ -490,6 +490,56 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     ]
   );
 
+  const getCollectionItems = useCallback(
+    <K extends CollectionName>(collectionName: K): CollectionMap[K][] => {
+      switch (collectionName) {
+        case "dashboardGroups":
+          return dashboardGroupsState.items as CollectionMap[K][];
+        case "boardTexts":
+          return boardTextsState.items as CollectionMap[K][];
+        case "links":
+          return linksState.items as CollectionMap[K][];
+        case "linkGroups":
+          return linkGroupsState.items as CollectionMap[K][];
+        case "tasks":
+          return tasksState.items as CollectionMap[K][];
+        case "taskGroups":
+          return taskGroupsState.items as CollectionMap[K][];
+        case "lists":
+          return listsState.items as CollectionMap[K][];
+        case "listItems":
+          return listItemsState.items as CollectionMap[K][];
+        case "notes":
+          return notesState.items as CollectionMap[K][];
+        case "noteGroups":
+          return noteGroupsState.items as CollectionMap[K][];
+        case "files":
+          return filesState.items as CollectionMap[K][];
+        case "fileGroups":
+          return fileGroupsState.items as CollectionMap[K][];
+        case "portfolio":
+          return portfolioState.items as CollectionMap[K][];
+      }
+
+      throw new Error(`Unsupported collection: ${collectionName satisfies never}`);
+    },
+    [
+      boardTextsState.items,
+      dashboardGroupsState.items,
+      fileGroupsState.items,
+      filesState.items,
+      linkGroupsState.items,
+      linksState.items,
+      listItemsState.items,
+      listsState.items,
+      noteGroupsState.items,
+      notesState.items,
+      portfolioState.items,
+      taskGroupsState.items,
+      tasksState.items,
+    ]
+  );
+
   const collectionsLoading =
     dashboardGroupsState.loading ||
     boardTextsState.loading ||
@@ -572,14 +622,26 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      await hardDeleteCollectionItem({
-        mode,
-        userId,
+      const currentItems = getCollectionItems(collectionName);
+      replaceCollectionItems(
         collectionName,
-        id,
-      });
+        currentItems.filter((item) => item.id !== id) as CollectionMap[K][]
+      );
+      setSyncIssue(null);
+
+      try {
+        await hardDeleteCollectionItem({
+          mode,
+          userId,
+          collectionName,
+          id,
+        });
+      } catch (error) {
+        replaceCollectionItems(collectionName, currentItems);
+        setSyncIssue(error instanceof Error ? error.message : "Failed to delete this item.");
+      }
     },
-    [mode, userId]
+    [getCollectionItems, mode, replaceCollectionItems, userId]
   );
 
   const saveWorkspaceSettings = useCallback(

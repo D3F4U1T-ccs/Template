@@ -4,12 +4,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
 import { useAppData } from "@/hooks/use-app-data";
 import { cn } from "@/shared/lib/utils";
-import type { SpacePlacement, SpaceViewport } from "@/types/models";
+import type { CanvasPattern, SpacePlacement, SpaceViewport } from "@/types/models";
 import { debugSpaceEvent } from "@/utils/space-debug";
 import { clampZoom } from "@/utils/space";
 
@@ -94,6 +95,17 @@ type ResizeState = {
   minHeight: number;
 };
 
+type CanvasPatternLayer = {
+  opacity?: number;
+  style: CSSProperties;
+};
+
+type CanvasPatternLayers = {
+  base: CanvasPatternLayer;
+  accent?: CanvasPatternLayer;
+  glow?: CanvasPatternLayer;
+};
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -151,6 +163,154 @@ function getResizedPlacement(
   };
 }
 
+function getCanvasPatternLayers(pattern: CanvasPattern): CanvasPatternLayers {
+  switch (pattern) {
+    case "grid":
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, var(--canvas-dot) 1px, transparent 1px), linear-gradient(to bottom, var(--canvas-dot) 1px, transparent 1px)",
+            backgroundSize: "28px 28px",
+          },
+        },
+        accent: {
+          opacity: 0.4,
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, var(--app-border) 1px, transparent 1px), linear-gradient(to bottom, var(--app-border) 1px, transparent 1px)",
+            backgroundSize: "140px 140px",
+          },
+        },
+      };
+    case "softGrid":
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, var(--canvas-dot) 1px, transparent 1px), linear-gradient(to bottom, var(--canvas-dot) 1px, transparent 1px)",
+            backgroundSize: "18px 18px",
+          },
+        },
+        accent: {
+          opacity: 0.55,
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, var(--canvas-spotlight) 1px, transparent 1px), linear-gradient(to bottom, var(--canvas-spotlight) 1px, transparent 1px)",
+            backgroundSize: "90px 90px",
+          },
+        },
+        glow: {
+          opacity: 0.5,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 18% 18%, var(--canvas-spotlight), transparent 26%), radial-gradient(circle at 82% 22%, var(--app-brand-soft), transparent 22%)",
+            backgroundRepeat: "no-repeat",
+          },
+        },
+      };
+    case "cross":
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "linear-gradient(45deg, transparent 47%, var(--canvas-dot) 48%, var(--canvas-dot) 52%, transparent 53%), linear-gradient(-45deg, transparent 47%, var(--canvas-dot) 48%, var(--canvas-dot) 52%, transparent 53%)",
+            backgroundSize: "42px 42px",
+          },
+        },
+        accent: {
+          opacity: 0.45,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at center, var(--canvas-spotlight) 1px, transparent 1px)",
+            backgroundSize: "42px 42px",
+          },
+        },
+      };
+    case "blueprint":
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, rgba(77, 144, 254, 0.16) 1px, transparent 1px), linear-gradient(to bottom, rgba(77, 144, 254, 0.16) 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+          },
+        },
+        accent: {
+          opacity: 0.7,
+          style: {
+            backgroundImage:
+              "linear-gradient(to right, rgba(77, 144, 254, 0.26) 1.2px, transparent 1.2px), linear-gradient(to bottom, rgba(77, 144, 254, 0.26) 1.2px, transparent 1.2px)",
+            backgroundSize: "120px 120px",
+          },
+        },
+        glow: {
+          opacity: 0.75,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 16% 18%, rgba(56, 189, 248, 0.18), transparent 28%), radial-gradient(circle at 78% 78%, rgba(96, 165, 250, 0.14), transparent 26%)",
+            backgroundRepeat: "no-repeat",
+          },
+        },
+      };
+    case "aurora":
+      return {
+        base: {
+          opacity: 0.55,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 1px 1px, var(--canvas-dot) 1px, transparent 0)",
+            backgroundSize: "30px 30px",
+          },
+        },
+        accent: {
+          opacity: 0.85,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 18% 20%, rgba(45, 212, 191, 0.22), transparent 28%), radial-gradient(circle at 78% 18%, rgba(59, 130, 246, 0.18), transparent 24%), radial-gradient(circle at 55% 82%, rgba(249, 115, 22, 0.15), transparent 28%)",
+            backgroundRepeat: "no-repeat",
+          },
+        },
+        glow: {
+          opacity: 0.6,
+          style: {
+            backgroundImage:
+              "linear-gradient(135deg, rgba(255,255,255,0.03) 0%, transparent 45%, rgba(255,255,255,0.02) 100%)",
+          },
+        },
+      };
+    case "dots":
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 1px 1px, var(--canvas-dot) 1.15px, transparent 0)",
+            backgroundSize: "22px 22px",
+          },
+        },
+        accent: {
+          opacity: 0.38,
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at center, var(--canvas-spotlight) 1px, transparent 1px)",
+            backgroundSize: "88px 88px",
+            backgroundPosition: "44px 44px",
+          },
+        },
+      };
+    default:
+      return {
+        base: {
+          style: {
+            backgroundImage:
+              "radial-gradient(circle at 1px 1px, var(--canvas-dot) 1.15px, transparent 0)",
+            backgroundSize: "22px 22px",
+          },
+        },
+      };
+  }
+}
+
 export function SpaceCanvas<T>({
   nodes,
   viewport,
@@ -178,6 +338,10 @@ export function SpaceCanvas<T>({
   const panRef = useRef<PanState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const suppressClickUntilRef = useRef(0);
+  const canvasPatternLayers = useMemo(
+    () => getCanvasPatternLayers(settings.canvasPattern),
+    [settings.canvasPattern]
+  );
 
   useEffect(() => {
     if (dragRef.current || resizeRef.current) {
@@ -552,15 +716,33 @@ export function SpaceCanvas<T>({
       )}
     >
       <div
-        className={cn(
-          "absolute inset-0",
-          settings.canvasPattern === "grid"
-            ? "bg-[linear-gradient(to_right,var(--canvas-dot)_1px,transparent_1px),linear-gradient(to_bottom,var(--canvas-dot)_1px,transparent_1px)] [background-size:28px_28px]"
-            : "bg-[radial-gradient(circle_at_1px_1px,var(--canvas-dot)_1px,transparent_0)] [background-size:22px_22px]"
-        )}
+        className="absolute inset-0"
         aria-hidden
-        style={{ opacity: settings.canvasOpacity }}
+        style={{
+          ...canvasPatternLayers.base.style,
+          opacity: settings.canvasOpacity * (canvasPatternLayers.base.opacity ?? 1),
+        }}
       />
+      {canvasPatternLayers.accent ? (
+        <div
+          className="absolute inset-0"
+          aria-hidden
+          style={{
+            ...canvasPatternLayers.accent.style,
+            opacity: settings.canvasOpacity * (canvasPatternLayers.accent.opacity ?? 1),
+          }}
+        />
+      ) : null}
+      {canvasPatternLayers.glow ? (
+        <div
+          className="absolute inset-0"
+          aria-hidden
+          style={{
+            ...canvasPatternLayers.glow.style,
+            opacity: settings.canvasOpacity * (canvasPatternLayers.glow.opacity ?? 1),
+          }}
+        />
+      ) : null}
       <div
         className="absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(0,0,0,0.02))]"
         aria-hidden

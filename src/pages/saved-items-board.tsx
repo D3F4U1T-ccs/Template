@@ -1,9 +1,14 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, Rows3, StarOff, Trash2 } from "lucide-react";
 
 import { BoardTextCard } from "@/components/ui/board-text-card";
 import { ObjectTileCard } from "@/components/ui/object-tile-card";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -28,7 +33,7 @@ import {
   toggleFavorite,
   togglePinned,
 } from "@/utils/entity";
-import { normalizeUrl } from "@/utils/files";
+import { normalizeUrl, resolveLinkIconUrl } from "@/utils/files";
 import { createGridPlacement, createViewportCenteredOnPlacement } from "@/utils/space";
 import {
   ensureShortcutBoardPlacements,
@@ -129,7 +134,11 @@ function buildSavedItems(
       kind: "tile" as const,
       title: item.title,
       subtitle: item.statusText || item.description || item.url,
-      avatarUrl: item.customIconUrl || item.iconUrl,
+      avatarUrl: resolveLinkIconUrl({
+        url: item.url,
+        customIconUrl: item.customIconUrl,
+        iconUrl: item.iconUrl,
+      }),
       avatarLabel: "L",
       collectionName: "links" as const,
       entity: item,
@@ -234,13 +243,15 @@ function buildSavedItems(
   ] satisfies SavedItem[];
 }
 
-export function SavedItemsBoard({ mode: _mode }: { mode: SavedMode }) {
+export function SavedItemsBoard({ mode }: { mode: SavedMode }) {
   const navigate = useNavigate();
   const { collections, hardDelete, saveItem, settings } = useAppData();
   const { t } = useI18n();
   const space = FAVORITES_SPACE;
+  void mode;
   const { viewport, setViewport } = useSpaceViewport(space);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
 
   const items = useMemo(() => buildSavedItems(collections, t), [collections, t]);
 
@@ -329,9 +340,66 @@ export function SavedItemsBoard({ mode: _mode }: { mode: SavedMode }) {
     [nodes, t]
   );
 
+  const sidePanelItems = useMemo<Array<SpaceSidePanelItem>>(
+    () =>
+      items
+        .filter((item) => item.kind === "tile")
+        .map((item) => ({
+          id: `favorite-${item.id}`,
+          title: item.title,
+          subtitle: item.subtitle,
+          kind: "item" as const,
+          previewImageUrl: "avatarUrl" in item ? item.avatarUrl : undefined,
+          previewLabel: item.avatarLabel,
+          onClick: () => {
+            if (item.kind === "tile") {
+              openSavedItem(item, navigate);
+            }
+          },
+          actions: [
+            {
+              id: `unfavorite-${item.id}`,
+              icon: <StarOff className="h-4 w-4" />,
+              label: t("removeFavorite"),
+              onClick: () => {
+                if (item.kind === "tile") {
+                  void saveItem(item.collectionName, toggleFavorite(item.entity) as never);
+                }
+              },
+            },
+            {
+              id: `delete-${item.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                if (item.kind === "tile") {
+                  void hardDelete(item.collectionName, item.entity.id);
+                }
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+    [hardDelete, items, navigate, saveItem, t]
+  );
+
   return (
     <div className="relative h-full">
-      <SpaceCanvas
+      {!listMode ? (
+        <SpaceSidePanel
+          items={sidePanelItems}
+          title={t("favoritesPage")}
+        />
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          title={t("favoritesPage")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -476,11 +544,26 @@ export function SavedItemsBoard({ mode: _mode }: { mode: SavedMode }) {
         size={{ width: 3600, height: 2400 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
     </div>

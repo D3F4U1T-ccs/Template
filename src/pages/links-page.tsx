@@ -1,8 +1,13 @@
 import { useMemo, useState } from "react";
-import { MoreHorizontal, Plus } from "lucide-react";
+import { ExternalLink, MoreHorizontal, PencilLine, Plus, Rows3, Trash2 } from "lucide-react";
 
 import { accentOptions } from "@/data/app-config";
+import { SpaceListMode } from "@/components/ui/space-list-mode";
 import { BoardTextCard } from "@/components/ui/board-text-card";
+import {
+  SpaceSidePanel,
+  type SpaceSidePanelItem,
+} from "@/components/ui/space-side-panel";
 import {
   SpaceObjectFinder,
   type SpaceObjectFinderItem,
@@ -29,7 +34,7 @@ import type {
   LinkItem,
   WorkspaceSpaceKey,
 } from "@/types/models";
-import { getFaviconUrl, normalizeUrl } from "@/utils/files";
+import { getFaviconUrl, normalizeUrl, resolveLinkIconUrl } from "@/utils/files";
 import { buildNestedChildIndex, getDescendantGroupIds } from "@/utils/group-tree";
 import {
   filterActive,
@@ -53,7 +58,7 @@ import {
 import {
   createGridPlacement,
   createViewportCenteredOnPlacement,
-  getPlacementOverlapRatio,
+  getInnermostContainingEntry,
 } from "@/utils/space";
 
 type LinkBoardData =
@@ -119,6 +124,7 @@ export default function LinksPage() {
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [listMode, setListMode] = useState(false);
   const [linkForm, setLinkForm] = useState(emptyLinkForm);
   const [groupForm, setGroupForm] = useState(emptyGroupForm);
 
@@ -415,6 +421,229 @@ export default function LinksPage() {
     [nodes, t]
   );
 
+  const getSidePanelGroupId = (groupId: string) => `group-${groupId}`;
+
+  const sidePanelItems: Array<SpaceSidePanelItem> = [
+      ...[...groups]
+        .sort((left, right) => left.order - right.order)
+        .map((group) => ({
+          id: getSidePanelGroupId(group.id),
+          parentId: group.parentGroupId ? getSidePanelGroupId(group.parentGroupId) : null,
+          title: group.title,
+          subtitle: group.description || t("links"),
+          kind: "group" as const,
+          accentClassName: group.accent,
+          draggable: true,
+          actions: [
+            {
+              id: `edit-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditGroup(group);
+              },
+            },
+            {
+              id: `pin-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveGroupItem(togglePinned(group));
+              },
+            },
+            {
+              id: `favorite-group-${group.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: group.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveGroupItem(toggleFavorite(group));
+              },
+            },
+            {
+              id: `delete-group-${group.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void deleteGroup(group);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+      ...[...links]
+        .sort((left, right) => left.order - right.order)
+        .map((link) => ({
+          id: `link-${link.id}`,
+          parentId: link.groupId ? getSidePanelGroupId(link.groupId) : null,
+          title: link.title,
+          subtitle: link.statusText || link.description || link.url,
+          kind: "item" as const,
+          previewImageUrl: resolveLinkIconUrl({
+            url: link.url,
+            customIconUrl: link.customIconUrl,
+            iconUrl: link.iconUrl,
+          }),
+          draggable: true,
+          onClick: () => {
+            openEditLink(link);
+          },
+          actions: [
+            {
+              id: `open-link-${link.id}`,
+              icon: <ExternalLink className="h-4 w-4" />,
+              label: t("open"),
+              onClick: () => {
+                window.open(normalizeUrl(link.url), "_blank", "noopener,noreferrer");
+              },
+            },
+            {
+              id: `edit-link-${link.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: t("edit"),
+              onClick: () => {
+                openEditLink(link);
+              },
+            },
+            {
+              id: `pin-link-${link.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: link.pinned ? t("unpin") : t("pin"),
+              onClick: () => {
+                void saveLinkItem(togglePinned(link));
+              },
+            },
+            {
+              id: `favorite-link-${link.id}`,
+              icon: <PencilLine className="h-4 w-4" />,
+              label: link.favorite ? t("removeFavorite") : t("favorite"),
+              onClick: () => {
+                void saveLinkItem(toggleFavorite(link));
+              },
+            },
+            {
+              id: `delete-link-${link.id}`,
+              icon: <Trash2 className="h-4 w-4" />,
+              label: t("delete"),
+              onClick: () => {
+                void hardDelete("links", link.id);
+              },
+              tone: "danger" as const,
+            },
+          ],
+        })),
+    ];
+
+  async function handleSidePanelMoveLink(
+    itemId: string,
+    targetGroupPanelId: string | null
+  ) {
+    const targetGroupId = targetGroupPanelId?.replace(/^group-/, "") ?? null;
+    const targetGroup = targetGroupId
+      ? groups.find((entry) => entry.id === targetGroupId) ?? null
+      : null;
+
+    if (itemId.startsWith("group-")) {
+      const groupId = itemId.replace(/^group-/, "");
+      const group = groups.find((entry) => entry.id === groupId);
+
+      if (!group || group.parentGroupId === targetGroupId) {
+        return;
+      }
+
+      const descendantGroupIds = getDescendantGroupIds(groups, group.id);
+
+      if (targetGroupId && (targetGroupId === group.id || descendantGroupIds.includes(targetGroupId))) {
+        return;
+      }
+
+      const placement = targetGroup
+        ? createContainerPlacement(
+            groupPlacements.get(targetGroup.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: GROUP_DEFAULT_SIZE.width,
+                height: GROUP_DEFAULT_SIZE.height,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+              (key) => key !== `group-${group.id}`
+            ).length,
+            GROUP_DEFAULT_SIZE,
+            LINK_GROUP_LAYOUT
+          ).placement
+        : getSpacePlacement(
+            ensureEntityCenteredInSpace(group, LINKS_SPACE, viewport, GROUP_DEFAULT_SIZE),
+            LINKS_SPACE,
+            createGridPlacement(0, {
+              startX: 120,
+              startY: 120,
+              width: GROUP_DEFAULT_SIZE.width,
+              height: GROUP_DEFAULT_SIZE.height,
+              columns: 2,
+              gapX: 48,
+              gapY: 48,
+            })
+          );
+
+      await handleGroupPlacementCommit(group, placement, targetGroupId);
+      return;
+    }
+
+    const linkId = itemId.replace(/^link-/, "");
+    const link = links.find((entry) => entry.id === linkId);
+
+    if (!link || link.groupId === targetGroupId) {
+      return;
+    }
+
+    let nextLink = ensureShortcutBoardPlacements(
+      {
+        ...link,
+        groupId: targetGroupId,
+      },
+      settings,
+      LINK_TILE_SIZE
+    );
+
+    if (!targetGroup) {
+      nextLink = ensureEntityCenteredInSpace(nextLink, LINKS_SPACE, viewport, LINK_TILE_SIZE);
+      await saveItem("links", nextLink);
+      return;
+    }
+
+    const targetPlacement =
+      groupPlacements.get(targetGroup.id) ??
+      createGridPlacement(0, {
+        startX: 120,
+        startY: 120,
+        width: GROUP_DEFAULT_SIZE.width,
+        height: GROUP_DEFAULT_SIZE.height,
+        columns: 2,
+        gapX: 48,
+        gapY: 48,
+      });
+    const { container, placement } = createContainerPlacement(
+      targetPlacement,
+      (childLayout.keysByParentId.get(targetGroup.id) ?? []).filter(
+        (key) => key !== `link-${nextLink.id}`
+      ).length,
+      LINK_TILE_SIZE,
+      LINK_GROUP_LAYOUT
+    );
+
+    nextLink = setSpacePlacement(nextLink, LINKS_SPACE, placement);
+
+    await Promise.all([
+      saveItem("links", nextLink),
+      container.width !== targetPlacement.width || container.height !== targetPlacement.height
+        ? saveItem("linkGroups", setSpacePlacement(targetGroup, LINKS_SPACE, container))
+        : Promise.resolve(),
+    ]);
+  }
+
   function openCreateLink(groupId?: string | null) {
     setLinkForm({
       ...emptyLinkForm,
@@ -686,7 +915,8 @@ export default function LinksPage() {
 
   async function handleGroupPlacementCommit(
     group: LinkGroup,
-    placement: ReturnType<typeof createGridPlacement>
+    placement: ReturnType<typeof createGridPlacement>,
+    forcedTargetGroupId?: string | null
   ) {
     const previousPlacement = groupPlacements.get(group.id);
 
@@ -696,26 +926,30 @@ export default function LinksPage() {
 
     const descendantGroupIds = getDescendantGroupIds(groups, group.id);
     const blockedGroupIds = new Set([group.id, ...descendantGroupIds]);
-    const targetGroup = groups
-      .filter((entry) => !blockedGroupIds.has(entry.id))
-      .map((entry) => ({
-        group: entry,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(entry.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5)?.group;
+    const targetGroup =
+      forcedTargetGroupId === undefined
+        ? getInnermostContainingEntry(
+            placement,
+            groups.filter((entry) => !blockedGroupIds.has(entry.id)),
+            (entry) =>
+              groupPlacements.get(entry.id) ??
+              createGridPlacement(0, {
+                startX: 120,
+                startY: 120,
+                width: 760,
+                height: 380,
+                columns: 2,
+                gapX: 48,
+                gapY: 48,
+              }),
+            18
+          )
+        : forcedTargetGroupId
+          ? groups.find(
+              (entry) =>
+                entry.id === forcedTargetGroupId && !blockedGroupIds.has(entry.id)
+            ) ?? null
+          : null;
 
     let nextPlacement = placement;
     const changedGroups = new Map<string, LinkGroup>();
@@ -854,32 +1088,29 @@ export default function LinksPage() {
     link: LinkItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "links",
       setSpacePlacement(
         {
           ...link,
-          groupId: targetGroup?.group.id ?? null,
+          groupId: targetGroup?.id ?? null,
         },
         LINKS_SPACE,
         placement
@@ -891,32 +1122,29 @@ export default function LinksPage() {
     text: BoardTextItem,
     placement: ReturnType<typeof createGridPlacement>
   ) {
-    const targetGroup = groups
-      .map((group) => ({
-        group,
-        overlap: getPlacementOverlapRatio(
-          placement,
-          groupPlacements.get(group.id) ??
-            createGridPlacement(0, {
-              startX: 120,
-              startY: 120,
-              width: 760,
-              height: 380,
-              columns: 2,
-              gapX: 48,
-              gapY: 48,
-            })
-        ),
-      }))
-      .sort((left, right) => right.overlap - left.overlap)
-      .find((entry) => entry.overlap >= 0.5);
+    const targetGroup = getInnermostContainingEntry(
+      placement,
+      groups,
+      (group) =>
+        groupPlacements.get(group.id) ??
+        createGridPlacement(0, {
+          startX: 120,
+          startY: 120,
+          width: 760,
+          height: 380,
+          columns: 2,
+          gapX: 48,
+          gapY: 48,
+        }),
+      18
+    );
 
     await saveItem(
       "boardTexts",
       setSpacePlacement(
         {
           ...text,
-          parentGroupId: targetGroup?.group.id ?? null,
+          parentGroupId: targetGroup?.id ?? null,
         },
         LINKS_SPACE,
         placement
@@ -926,26 +1154,68 @@ export default function LinksPage() {
 
   return (
     <div className="relative h-full">
-      <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
-            {t("createGroup")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="rounded-full" onClick={openCreateText} variant="secondary">
-            {t("createText")}
-          </Button>
-        </div>
-        <div className="pointer-events-auto">
-          <Button className="gap-2 rounded-full" onClick={() => openCreateLink()}>
-            <Plus className="h-4 w-4" />
-            {t("addLink")}
-          </Button>
-        </div>
-      </div>
+      {!listMode ? (
+        <SpaceSidePanel
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateLink()}>
+                {t("addLink")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveLink(itemId, targetGroupId);
+          }}
+          title={t("links")}
+        />
+      ) : null}
 
-      <SpaceCanvas
+      {!listMode ? (
+        <div className="pointer-events-none absolute left-4 top-4 z-20 flex gap-2">
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+              {t("createGroup")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="rounded-full" onClick={openCreateText} variant="secondary">
+              {t("createText")}
+            </Button>
+          </div>
+          <div className="pointer-events-auto">
+            <Button className="gap-2 rounded-full" onClick={() => openCreateLink()}>
+              <Plus className="h-4 w-4" />
+              {t("addLink")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {listMode ? (
+        <SpaceListMode
+          actions={
+            <>
+              <Button className="rounded-full" onClick={() => openCreateGroup()} variant="secondary">
+                {t("createGroup")}
+              </Button>
+              <Button className="rounded-full" onClick={() => openCreateLink()}>
+                {t("addLink")}
+              </Button>
+            </>
+          }
+          items={sidePanelItems}
+          onExit={() => setListMode(false)}
+          onMoveItem={(itemId, targetGroupId) => {
+            void handleSidePanelMoveLink(itemId, targetGroupId);
+          }}
+          title={t("links")}
+        />
+      ) : (
+        <SpaceCanvas
         className="h-full min-h-0 rounded-none border-0 shadow-none"
         emptyState={
           <EmptyState
@@ -1123,11 +1393,26 @@ export default function LinksPage() {
         size={{ width: 4600, height: 2800 }}
         viewport={viewport}
       />
+      )}
 
       <SpaceObjectFinder
         items={finderItems}
+        floatingActions={
+          <Button
+            aria-label={listMode ? t("spaceCanvasLabel") : t("spaceListLabel")}
+            className="rounded-full shadow-[var(--shadow-soft)]"
+            onClick={() => setListMode((current) => !current)}
+            size="icon"
+            variant="secondary"
+          >
+            <Rows3 className="h-4 w-4" />
+          </Button>
+        }
         onFocusItem={(item) =>
-          setViewport(createViewportCenteredOnPlacement(item.placement, viewport))
+          {
+            setListMode(false);
+            setViewport(createViewportCenteredOnPlacement(item.placement, viewport));
+          }
         }
       />
 
@@ -1386,7 +1671,11 @@ export default function LinksPage() {
                         alt={link.title}
                         className="h-10 w-10 rounded-full object-cover"
                         draggable={false}
-                        src={link.customIconUrl || link.iconUrl || getFaviconUrl(link.url)}
+                        src={resolveLinkIconUrl({
+                          url: link.url,
+                          customIconUrl: link.customIconUrl,
+                          iconUrl: link.iconUrl,
+                        })}
                       />
                       <div className="min-w-0">
                         <p className="truncate font-medium text-[var(--app-text)]">{link.title}</p>
@@ -1432,7 +1721,11 @@ function LinkTileCard({
 
   return (
     <ObjectTileCard
-      avatarUrl={link.customIconUrl || link.iconUrl || getFaviconUrl(link.url)}
+      avatarUrl={resolveLinkIconUrl({
+        url: link.url,
+        customIconUrl: link.customIconUrl,
+        iconUrl: link.iconUrl,
+      })}
       className="cursor-grab active:cursor-grabbing"
       cornerRadius={link.cornerRadius}
       menu={

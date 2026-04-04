@@ -18,9 +18,11 @@ export type SpaceObjectFinderItem = {
 export function SpaceObjectFinder({
   items,
   onFocusItem,
+  floatingActions,
 }: {
   items: SpaceObjectFinderItem[];
   onFocusItem: (item: SpaceObjectFinderItem) => void;
+  floatingActions?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -53,7 +55,8 @@ export function SpaceObjectFinder({
   return (
     <>
       <div className="pointer-events-none absolute bottom-4 right-4 z-20">
-        <div className="pointer-events-auto">
+        <div className="pointer-events-auto flex items-center gap-2">
+          {floatingActions}
           <Button
             aria-label={t("spaceFinderTitle")}
             className="rounded-full shadow-[var(--shadow-soft)]"

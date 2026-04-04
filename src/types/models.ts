@@ -1,6 +1,12 @@
 export type ThemeMode = "dark" | "light" | "system";
 export type LanguageCode = "ru" | "en";
-export type CanvasPattern = "dots" | "grid";
+export type CanvasPattern =
+  | "dots"
+  | "grid"
+  | "softGrid"
+  | "cross"
+  | "blueprint"
+  | "aurora";
 
 export type AppPageKey =
   | "dashboard"

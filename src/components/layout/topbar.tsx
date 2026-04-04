@@ -12,6 +12,7 @@ import { Modal } from "@/components/ui/modal";
 import { Field, Select } from "@/components/ui/primitives";
 import { cn } from "@/shared/lib/utils";
 import { Button } from "@/shared/ui/button";
+import type { CanvasPattern } from "@/types/models";
 
 export function Topbar({ onSearchOpen }: { onSearchOpen: () => void }) {
   const { signOut } = useAuth();
@@ -20,6 +21,14 @@ export function Topbar({ onSearchOpen }: { onSearchOpen: () => void }) {
   const { theme, setTheme } = useTheme();
   const { t } = useI18n();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const canvasPatternOptions: Array<{ value: CanvasPattern; label: string }> = [
+    { value: "dots", label: t("dots") },
+    { value: "grid", label: t("grid") },
+    { value: "softGrid", label: t("softGrid") },
+    { value: "cross", label: t("cross") },
+    { value: "blueprint", label: t("blueprint") },
+    { value: "aurora", label: t("aurora") },
+  ];
 
   return (
     <>
@@ -116,13 +125,16 @@ export function Topbar({ onSearchOpen }: { onSearchOpen: () => void }) {
             <Select
               onChange={(event) =>
                 void saveWorkspaceSettings({
-                  canvasPattern: event.target.value as "dots" | "grid",
+                  canvasPattern: event.target.value as CanvasPattern,
                 })
               }
               value={settings.canvasPattern}
             >
-              <option value="dots">{t("dots")}</option>
-              <option value="grid">{t("grid")}</option>
+              {canvasPatternOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </Select>
           </Field>
 

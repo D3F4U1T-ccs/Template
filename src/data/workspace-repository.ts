@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   query,
@@ -71,7 +72,14 @@ const PAGE_KEYS: AppPageKey[] = [
 ];
 const THEME_MODES: ThemeMode[] = ["system", "dark", "light"];
 const LANGUAGE_CODES: LanguageCode[] = ["ru", "en"];
-const CANVAS_PATTERNS: CanvasPattern[] = ["dots", "grid"];
+const CANVAS_PATTERNS: CanvasPattern[] = [
+  "dots",
+  "grid",
+  "softGrid",
+  "cross",
+  "blueprint",
+  "aurora",
+];
 const FILE_SOURCE_TYPES: FileSourceType[] = ["upload", "link", "youtube"];
 const PORTFOLIO_CATEGORIES: PortfolioCategory[] = [
   "site",
@@ -85,6 +93,9 @@ const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 const TASK_TYPES = ["day", "week", "month", "someday", "recurring"] as const;
 const REPEAT_RULES = ["none", "daily", "weekly", "monthly"] as const;
 const BOARD_TEXT_TONES: BoardTextTone[] = ["plain", "solid", "glass"];
+const FIRESTORE_POLL_INTERVAL_MS = 2500;
+const SHOULD_POLL_FIRESTORE =
+  import.meta.env.DEV || import.meta.env.VITE_FIRESTORE_USE_POLLING === "true";
 
 function collectionPath(userId: string, collectionName: CollectionName) {
   return `users/${userId}/${collectionName}`;
@@ -591,7 +602,60 @@ export function subscribeCollection<T extends BaseEntity>(args: {
     }
 
     const collectionRef = collection(services.db, collectionPath(userId, collectionName));
-    const unsubscribe = onSnapshot(
+
+    const subscribeByPolling = () => {
+      let disposed = false;
+
+      const syncOnce = async () => {
+        try {
+          const snapshot = await getDocs(collectionRef);
+
+          if (disposed) {
+            return;
+          }
+
+          const items = snapshot.docs.map((entry) =>
+            normalizeCollectionItem(collectionName, entry.id, entry.data())
+          ) as unknown as T[];
+
+          onData(items);
+        } catch (error) {
+          if (!disposed) {
+            onError?.(error instanceof Error ? error.message : "Failed to sync collection.");
+          }
+        }
+      };
+
+      void syncOnce();
+      const intervalId = window.setInterval(() => {
+        void syncOnce();
+      }, FIRESTORE_POLL_INTERVAL_MS);
+
+      return () => {
+        disposed = true;
+        window.clearInterval(intervalId);
+      };
+    };
+
+    if (SHOULD_POLL_FIRESTORE) {
+      return subscribeByPolling();
+    }
+
+    let fallbackCleanup: (() => void) | undefined;
+    let fallbackStarted = false;
+    let unsubscribe: () => void = () => {};
+
+    const startFallback = () => {
+      if (fallbackStarted) {
+        return;
+      }
+
+      fallbackStarted = true;
+      unsubscribe();
+      fallbackCleanup = subscribeByPolling();
+    };
+
+    unsubscribe = onSnapshot(
       query(collectionRef),
       (snapshot) => {
         const items = snapshot.docs.map((entry) =>
@@ -602,10 +666,14 @@ export function subscribeCollection<T extends BaseEntity>(args: {
       },
       (error) => {
         onError?.(error.message);
+        startFallback();
       }
     );
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      fallbackCleanup?.();
+    };
   }
 
   const emit = () => onData(readLocalCollection(userId, collectionName) as unknown as T[]);
@@ -746,13 +814,69 @@ export function subscribeSettings(args: {
 
     const settingsRef = doc(services.db, settingsPath(userId));
 
-    return onSnapshot(
+    const subscribeByPolling = () => {
+      let disposed = false;
+
+      const syncOnce = async () => {
+        try {
+          const snapshot = await getDoc(settingsRef);
+
+          if (disposed) {
+            return;
+          }
+
+          onData(snapshot.exists() ? normalizeSettings(snapshot.data()) : defaultSettings);
+        } catch (error) {
+          if (!disposed) {
+            onError?.(error instanceof Error ? error.message : "Failed to sync settings.");
+          }
+        }
+      };
+
+      void syncOnce();
+      const intervalId = window.setInterval(() => {
+        void syncOnce();
+      }, FIRESTORE_POLL_INTERVAL_MS);
+
+      return () => {
+        disposed = true;
+        window.clearInterval(intervalId);
+      };
+    };
+
+    if (SHOULD_POLL_FIRESTORE) {
+      return subscribeByPolling();
+    }
+
+    let fallbackCleanup: (() => void) | undefined;
+    let fallbackStarted = false;
+    let unsubscribe: () => void = () => {};
+
+    const startFallback = () => {
+      if (fallbackStarted) {
+        return;
+      }
+
+      fallbackStarted = true;
+      unsubscribe();
+      fallbackCleanup = subscribeByPolling();
+    };
+
+    unsubscribe = onSnapshot(
       settingsRef,
       (snapshot) => {
         onData(snapshot.exists() ? normalizeSettings(snapshot.data()) : defaultSettings);
       },
-      (error) => onError?.(error.message)
+      (error) => {
+        onError?.(error.message);
+        startFallback();
+      }
     );
+
+    return () => {
+      unsubscribe();
+      fallbackCleanup?.();
+    };
   }
 
   const emit = () => onData(readLocalSettings(userId));
