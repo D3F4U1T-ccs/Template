@@ -1,12 +1,8 @@
 # Vite Ready Template
-<ol>
-  <li>First item</li>
-  <li>Second item</li>
-  <li>Third item
-    <ol>
-      <li>Indented item</li>
-      <li>Indented item</li>
-    </ol>
-  </li>
-  <li>Fourth item</li>
-</ol>
+
+this template includes - 
+- Vite
+- Shdcn ui
+- Type Script
+- tailwind css
+- Basic code for start
